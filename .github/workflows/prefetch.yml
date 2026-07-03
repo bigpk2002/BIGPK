@@ -1,1 +1,99 @@
+name: ดึงข้อมูลหุ้นล่วงหน้า (วันละครั้ง หลังตลาดปิด)
 
+on:
+  # v3.6: แก้ปัญหา GitHub หยุด schedule อัตโนมัติบน repo ที่ไม่มีการ commit
+  # (ตั้งแต่ย้ายไปเก็บที่ Release แทน commit GitHub มองว่า repo inactive และ
+  # เริ่ม delay / ข้ามรอบ) — แก้โดยให้ workflow commit ไฟล์ timestamp เล็กๆ
+  # เข้า repo ทุกวัน เพื่อให้ GitHub ถือว่า repo ยัง "มีกิจกรรม" ตลอด
+  #
+  # UTC 21:30 = ไทย 04:30 (หลังตลาดสหรัฐฯปิด ~04:00 น.ไทย + buffer 30 นาที)
+  # ใช้ :30 แทน :00 เพราะ GitHub Actions มักล่าช้าในช่วง top-of-hour ที่คนใช้เยอะ
+  schedule:
+    - cron: "30 21 * * *"
+  workflow_dispatch: {}
+
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: รัน fetch_data.py
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python fetch_data.py
+
+      # v3.6: commit ไฟล์ timestamp เล็กๆ เข้า repo เพื่อ keep-alive
+      # (กัน GitHub หยุด scheduled run บน repo ที่ไม่มี commit นาน — เพราะ
+      # ตั้งแต่ย้ายข้อมูลไปที่ Release แล้วไม่มี commit ใหม่เลย GitHub เริ่ม
+      # ข้ามรอบ schedule ให้) ไฟล์ .last_run มีแค่วันที่และจำนวนหุ้น
+      # ขนาดเล็กมาก (< 50 bytes) ไม่กระทบขนาด repo แต่อย่างใด
+      - name: Keep-alive commit (กัน GitHub หยุด schedule)
+        run: |
+          SCAN_COUNT=$(python3 -c "
+          import json, os
+          try:
+              d = json.load(open('data/latest_scan.json'))
+              print(len(d.get('data', [])))
+          except:
+              print(0)
+          ")
+          echo "$(date -u +%F) scanned=${SCAN_COUNT}" > .last_run
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add .last_run
+          git commit -m "keep-alive: $(date -u +%F) [skip ci]" || true
+          git push || true
+
+      - name: อัปโหลดข้อมูลล่าสุดไปที่ GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if ! gh release view latest-data >/dev/null 2>&1; then
+            gh release create latest-data \
+              --title "ข้อมูลล่าสุด (อัปเดตอัตโนมัติ)" \
+              --notes "ไม่ใช่ release โค้ดจริง ใช้เก็บไฟล์ข้อมูลที่ดึงอัตโนมัติทุกวันเท่านั้น"
+          fi
+          gh release upload latest-data data/latest_scan.json data/alerts.json --clobber
+
+      - name: สร้าง Historical Snapshot ของวันนี้
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TODAY=$(date -u +%F)
+          TAG="snapshot-$TODAY"
+          SNAPSHOT_FILE=$(ls data/snapshot_*.json 2>/dev/null | head -n 1)
+          if [ -n "$SNAPSHOT_FILE" ]; then
+            gh release create "$TAG" "$SNAPSHOT_FILE" \
+              --title "Snapshot $TODAY" \
+              --notes "ข้อมูล ณ วันที่ $TODAY (auto-prune หลัง 90 วัน)" \
+              || gh release upload "$TAG" "$SNAPSHOT_FILE" --clobber
+          else
+            echo "ไม่พบไฟล์ snapshot — ข้ามขั้นนี้"
+          fi
+
+      - name: ลบ Snapshot ที่เก่ากว่า 90 วัน
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          CUTOFF=$(date -u -d "90 days ago" +%F)
+          gh release list --limit 300 --json tagName -q '.[].tagName' | grep '^snapshot-' | while read -r tag; do
+            tag_date="${tag#snapshot-}"
+            if [[ "$tag_date" < "$CUTOFF" ]]; then
+              echo "ลบ release เก่า: $tag"
+              gh release delete "$tag" --yes --cleanup-tag || true
+            fi
+          done
