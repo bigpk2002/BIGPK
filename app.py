@@ -2099,7 +2099,7 @@ NOTABLE_SIGNALS = ("🔥 Strong Buy", "🚀 Breakout")
 # ตอนนี้ทำให้เป็นค่าคงที่จริงในโค้ด แล้ว fetch_data.py stamp ค่านี้ลงไปในทุก
 # ไฟล์ JSON ที่เซฟ (ดู fetch_data.py) เพื่อให้ข้อมูลในอนาคตกรองตาม version
 # ได้เอง ไม่ต้องจำเองว่า "อย่าเอาผลก่อนวันที่ X มาเทียบ"
-APP_VERSION = "3.15"
+APP_VERSION = "3.16"
 
 LIVE_SCAN_SAFETY_CAP = 100
 
@@ -2650,7 +2650,24 @@ def main():
                     "⚠️ เฝ้าระวัง": 3, "🔄 Neutral": 4, "⏳ รอ Pullback": 5, "❌ ขาลง": 6}
             if "Signal" in dfv.columns:
                 dfv["_p"] = dfv["Signal"].map(prio).fillna(7)
-                dfv = dfv.sort_values("_p").drop(columns=["_p"])
+            else:
+                dfv["_p"] = 7
+
+            # v3.16: เพิ่มการเรียงตาม "ใกล้แนวรับคุณภาพสูงสุด" เป็นตัวรอง — ไม่ได้
+            # เพิ่ม UI อะไรเลย (ไม่มีปุ่ม/checkbox ใหม่) แค่ทำให้ลำดับแถวที่เห็น
+            # อยู่แล้วช่วยตัดสินใจซื้อได้ดีขึ้นอัตโนมัติ: ภายใน Signal กลุ่ม
+            # เดียวกัน หุ้นที่ "อยู่ที่แนวรับ" มาก่อน "ใกล้แนวรับ" แล้วค่อยเรียง
+            # ตามคุณภาพแนวรับสูงสุด และระยะใกล้สุดตามลำดับ — ใช้ค่าดิบ (ตัวเลข
+            # จริง) จาก df ผ่าน index เพราะ dfv ถูกแปลงเป็น string แสดงผลไปแล้ว
+            sup_tier_map = {"🟢 อยู่ที่แนวรับ": 0, "🟡 ใกล้แนวรับ": 1}
+            if "Support" in df.columns:
+                dfv["_st"] = df.loc[dfv.index, "Support"].map(sup_tier_map).fillna(2)
+            else:
+                dfv["_st"] = 2
+            dfv["_sq"] = -df.loc[dfv.index, "Support Quality"] if "Support Quality" in df.columns else 0
+            dfv["_sd"] = df.loc[dfv.index, "Support Dist%"].fillna(999) if "Support Dist%" in df.columns else 999
+
+            dfv = dfv.sort_values(["_p", "_st", "_sq", "_sd"]).drop(columns=["_p", "_st", "_sq", "_sd"])
 
             # v3.9: ลดคอลัมน์ที่ style จาก 9 เหลือ 4 (Signal/Support/Weekly Trend/Gem)
             # — pandas Styler.map() วนลูป Python ทีละ cell ต่อคอลัมน์ ยิ่ง style
