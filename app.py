@@ -620,22 +620,19 @@ def signal_age(closes: pd.Series) -> int:
     return -1
 
 
-def find_support_levels(df: pd.DataFrame, lookback: int = 180, swing_window: int = 5,
-                        min_bars: Optional[int] = None) -> list:
+def _find_swing_levels(df: pd.DataFrame, col: str, mode: str, lookback: int = 180,
+                       swing_window: int = 5, min_bars: Optional[int] = None) -> list:
     """
-    หาแนวรับจาก swing low ในอดีต พร้อมข้อมูลประกอบสำหรับให้คะแนนความแข็งแกร่ง
-    (v3.7 — อัปเกรดจากเดิมที่คืนแค่ราคาเฉยๆ)
+    v3.15: ฟังก์ชันกลางสำหรับหา "จุดเปลี่ยนทิศ" ในราคา — ใช้ร่วมกันทั้งหา
+    แนวรับ (swing low จากคอลัมน์ Low, mode="low") และแนวต้าน (swing high จาก
+    คอลัมน์ High, mode="high") เพื่อไม่ให้โค้ด 2 ชุดที่ทำสิ่งเดียวกัน (แค่กลับ
+    ทิศ) แยกออกจากกันแล้วแก้ไม่พร้อมกันทีหลัง (จุดที่เคยเป็นความเสี่ยงมาก่อน
+    ตอนแก้ find_support_levels หลายรอบใน session นี้)
 
-    v3.8: เพิ่ม min_bars แยกจาก swing_window*2+30 เดิม (ค่า default ตั้งไว้
-    สำหรับแท่งรายวัน) เพราะตอนนี้ support_status() เรียกฟังก์ชันนี้ด้วยแท่ง
-    รายสัปดาห์ (~52 แท่ง/ปี) ถ้าใช้ threshold เดิม (30 แท่งบัฟเฟอร์) จะเข้มไป
-    สำหรับข้อมูลสัปดาห์ที่มีน้อยกว่ามาก
-
-    สำหรับแต่ละแนวรับ เก็บข้อมูลเพิ่ม:
-      - touch_count: ราคาเคยเข้ามาใกล้ระดับนี้ (ภายใน 1.5%) แล้ว "เด้งกลับขึ้น"
-        กี่ครั้ง — แนวรับที่โดนทดสอบหลายครั้งแล้วยังอยู่ น่าเชื่อกว่าจุดเดียว
-      - avg_bounce_volume_ratio: ปริมาณซื้อขายเฉลี่ยตอนเด้งกลับ เทียบกับค่าเฉลี่ย
-        วันปกติ (>1 แปลว่ามีแรงซื้อจริงเข้ามารองรับ ไม่ใช่แค่ราคาหยุดเฉยๆ)
+    สำหรับแต่ละระดับ เก็บ:
+      - touch_count: ราคาเคยเข้ามาใกล้ระดับนี้กี่ครั้ง (ภายใน 1% ถือว่ากลุ่มเดียวกัน)
+      - avg_bounce_volume_ratio: ปริมาณซื้อขายเฉลี่ยตอนเจอระดับนี้ เทียบค่าเฉลี่ย
+      - zone_low/zone_high: ช่วงราคาจริงของกลุ่ม (ไม่ใช่แค่ค่าเฉลี่ยจุดเดียว)
 
     คืนค่า list ของ dict เรียงจากราคามากไปน้อย
     """
@@ -644,21 +641,22 @@ def find_support_levels(df: pd.DataFrame, lookback: int = 180, swing_window: int
     if df is None or len(df) < min_bars:
         return []
     recent = df.iloc[-lookback:] if len(df) > lookback else df
-    lows = recent["Low"].values
+    prices = recent[col].values
     vol = recent["Volume"].values
     avg_vol = vol.mean() if vol.mean() > 0 else 1
-    n = len(lows)
+    n = len(prices)
 
     raw_swings = []
     for i in range(swing_window, n - swing_window):
-        window = lows[i - swing_window:i + swing_window + 1]
-        if lows[i] == window.min():
-            raw_swings.append((float(lows[i]), float(vol[i])))
+        window = prices[i - swing_window:i + swing_window + 1]
+        is_extreme = (prices[i] == window.min()) if mode == "low" else (prices[i] == window.max())
+        if is_extreme:
+            raw_swings.append((float(prices[i]), float(vol[i])))
 
     if not raw_swings:
         return []
 
-    # รวม swing low ที่ใกล้กัน (ภายใน 1%) เป็นระดับเดียวกัน + นับ touch + volume
+    # รวมจุดที่ใกล้กัน (ภายใน 1%) เป็นระดับเดียวกัน + นับ touch + volume
     raw_swings.sort(key=lambda x: x[0], reverse=True)
     merged = []
     for px, v in raw_swings:
@@ -667,7 +665,7 @@ def find_support_levels(df: pd.DataFrame, lookback: int = 180, swing_window: int
             if abs(px - grp["level"]) / grp["level"] <= 0.01:
                 grp["touches"].append(px)
                 grp["volumes"].append(v)
-                grp["level"] = sum(grp["touches"]) / len(grp["touches"])  # ปรับเป็นค่าเฉลี่ยของกลุ่ม
+                grp["level"] = sum(grp["touches"]) / len(grp["touches"])
                 placed = True
                 break
         if not placed:
@@ -677,10 +675,28 @@ def find_support_levels(df: pd.DataFrame, lookback: int = 180, swing_window: int
     for grp in merged:
         results.append({
             "level": round(grp["level"], 2),
+            "zone_low": round(min(grp["touches"]), 2),
+            "zone_high": round(max(grp["touches"]), 2),
             "touch_count": len(grp["touches"]),
             "avg_bounce_volume_ratio": round(float(np.mean(grp["volumes"])) / avg_vol, 2),
         })
     return sorted(results, key=lambda x: x["level"], reverse=True)
+
+
+def find_support_levels(df: pd.DataFrame, lookback: int = 180, swing_window: int = 5,
+                        min_bars: Optional[int] = None) -> list:
+    """หาแนวรับจาก swing low (ดู _find_swing_levels สำหรับรายละเอียด logic)"""
+    return _find_swing_levels(df, "Low", "low", lookback, swing_window, min_bars)
+
+
+def find_resistance_levels(df: pd.DataFrame, lookback: int = 180, swing_window: int = 5,
+                           min_bars: Optional[int] = None) -> list:
+    """
+    v3.15: หาแนวต้านจาก swing high — เดิมแอปมีแต่แนวรับ ไม่มีเป้าหมายขาย/
+    เป้าหมายทำกำไรเลย ใช้ logic เดียวกับแนวรับทุกอย่าง แค่มองหาจุดสูงสุดแทน
+    จุดต่ำสุด (ดู _find_swing_levels)
+    """
+    return _find_swing_levels(df, "High", "high", lookback, swing_window, min_bars)
 
 
 def resample_weekly_ohlc(df: pd.DataFrame) -> pd.DataFrame:
@@ -728,11 +744,19 @@ def support_status(price: float, df: pd.DataFrame, e50: float, e200: float) -> d
     Yahoo เพิ่ม (resample จาก df รายวันที่มีอยู่แล้ว) EMA50/EMA200 ยังคงเป็น
     รายวันเหมือนเดิม (เป็นคนละส่วนกับการหาสวิงโลว์)
 
+    v3.14: เพิ่ม zone_low/zone_high/zone_label — เดิมคืนแค่ "level" เป็นจุดราคา
+    เดียวเป๊ะๆ (เช่น 62.40) ซึ่งไม่ตรงกับการใช้งานจริง เพราะแนวรับจริงๆมักเป็น
+    "โซน" ราคา ไม่ใช่เส้นตรงเป๊ะ ตอนนี้ถ้าแนวรับมาจาก Swing Low ที่ถูกรวมกลุ่ม
+    จากหลายจุด (touches) จะโชว์เป็นช่วง (เช่น "60.20–65.40") จากค่าต่ำสุด-สูงสุด
+    ของกลุ่มนั้นจริงๆ ถ้ามาจาก EMA50/EMA200 (เป็นเส้นเดียว ไม่ใช่กลุ่ม) จะโชว์
+    เป็นจุดเดียวตามเดิม
+
     คืนค่า dict: {status, level, distance_pct, quality_score, touch_count,
-                  volume_confirmed, confluence}
+                  volume_confirmed, confluence, zone_low, zone_high, zone_label}
     """
     empty = {"status": "—", "level": np.nan, "distance_pct": np.nan,
-             "quality_score": 0, "touch_count": 0, "volume_confirmed": False, "confluence": False}
+             "quality_score": 0, "touch_count": 0, "volume_confirmed": False, "confluence": False,
+             "zone_low": np.nan, "zone_high": np.nan, "zone_label": "—"}
 
     weekly_df = resample_weekly_ohlc(df)
     swing_levels = find_support_levels(weekly_df, lookback=52, swing_window=2, min_bars=14)
@@ -740,12 +764,15 @@ def support_status(price: float, df: pd.DataFrame, e50: float, e200: float) -> d
     for sw in swing_levels:
         if sw["level"] <= price:
             candidates.append({"source": "Swing Low", "level": sw["level"],
+                               "zone_low": sw["zone_low"], "zone_high": sw["zone_high"],
                                "touch_count": sw["touch_count"],
                                "vol_ratio": sw["avg_bounce_volume_ratio"]})
     if e50 > 0 and e50 <= price:
-        candidates.append({"source": "EMA50", "level": e50, "touch_count": 1, "vol_ratio": 1.0})
+        candidates.append({"source": "EMA50", "level": e50, "zone_low": e50, "zone_high": e50,
+                           "touch_count": 1, "vol_ratio": 1.0})
     if e200 > 0 and e200 <= price:
-        candidates.append({"source": "EMA200", "level": e200, "touch_count": 1, "vol_ratio": 1.0})
+        candidates.append({"source": "EMA200", "level": e200, "zone_low": e200, "zone_high": e200,
+                           "touch_count": 1, "vol_ratio": 1.0})
 
     if not candidates:
         return empty
@@ -786,6 +813,90 @@ def support_status(price: float, df: pd.DataFrame, e50: float, e200: float) -> d
         "status": status, "level": round(best["level"], 2), "distance_pct": best["distance_pct"],
         "quality_score": best["quality_score"], "touch_count": best["touch_count"],
         "volume_confirmed": best["vol_ratio"] >= 1.3, "confluence": best["confluence"],
+        "zone_low": best["zone_low"], "zone_high": best["zone_high"],
+        "zone_label": (f'{best["zone_low"]:.2f}–{best["zone_high"]:.2f}'
+                      if best["zone_high"] > best["zone_low"] else f'{best["level"]:.2f}'),
+    }
+
+
+def resistance_status(price: float, df: pd.DataFrame, e50: float, e200: float) -> dict:
+    """
+    v3.15: แนวต้าน (Resistance) — เดิมแอปมีแต่แนวรับ ไม่มี "เป้าหมายขาย/
+    ทำกำไร" ให้เทียบเลย ใช้ logic เดียวกับ support_status() ทุกอย่างแค่กลับทิศ:
+      - หา swing high จากกราฟรายสัปดาห์ (เหตุผลเดียวกับแนวรับ — swing high
+        รายสัปดาห์หนักแน่นกว่ารายวัน)
+      - มองหาเฉพาะระดับที่อยู่ "เหนือ" ราคาปัจจุบัน (level >= price)
+      - ให้คะแนนความแข็งแกร่งจากปัจจัยเดียวกัน (touch count, volume,
+        confluence, ระยะห่าง)
+      - EMA50/EMA200 นับเป็นแนวต้านได้เฉพาะตอนที่อยู่เหนือราคาปัจจุบัน
+        (ต่างจาก support ที่ต้องอยู่ใต้ราคา)
+
+    คืนค่า dict โครงสร้างเดียวกับ support_status(): {status, level,
+    distance_pct, quality_score, touch_count, volume_confirmed, confluence,
+    zone_low, zone_high, zone_label}
+    """
+    empty = {"status": "—", "level": np.nan, "distance_pct": np.nan,
+             "quality_score": 0, "touch_count": 0, "volume_confirmed": False, "confluence": False,
+             "zone_low": np.nan, "zone_high": np.nan, "zone_label": "—"}
+
+    weekly_df = resample_weekly_ohlc(df)
+    swing_levels = find_resistance_levels(weekly_df, lookback=52, swing_window=2, min_bars=14)
+    candidates = []
+    for sw in swing_levels:
+        if sw["level"] >= price:
+            candidates.append({"source": "Swing High", "level": sw["level"],
+                               "zone_low": sw["zone_low"], "zone_high": sw["zone_high"],
+                               "touch_count": sw["touch_count"],
+                               "vol_ratio": sw["avg_bounce_volume_ratio"]})
+    if e50 > 0 and e50 >= price:
+        candidates.append({"source": "EMA50", "level": e50, "zone_low": e50, "zone_high": e50,
+                           "touch_count": 1, "vol_ratio": 1.0})
+    if e200 > 0 and e200 >= price:
+        candidates.append({"source": "EMA200", "level": e200, "zone_low": e200, "zone_high": e200,
+                           "touch_count": 1, "vol_ratio": 1.0})
+
+    if not candidates:
+        return empty
+
+    scored = []
+    for c in candidates:
+        dist = (c["level"] - price) / price * 100  # เป็นบวกเสมอเพราะแนวต้านอยู่เหนือราคา
+        if dist > 6.0:
+            continue
+        confluence = any(
+            other is not c and abs(other["level"] - c["level"]) / c["level"] <= 0.015
+            for other in candidates
+        )
+        touch_score = min(c["touch_count"], 4) * 1.5
+        volume_score = 2.0 if c["vol_ratio"] >= 1.3 else (1.0 if c["vol_ratio"] >= 1.0 else 0)
+        confluence_score = 2.0 if confluence else 0
+        proximity_score = max(0, 1.0 - dist / 6.0)
+        quality = round(touch_score + volume_score + confluence_score + proximity_score, 1)
+        scored.append({**c, "distance_pct": round(dist, 2), "confluence": confluence,
+                       "quality_score": min(quality, 10.0)})
+
+    if not scored:
+        return empty
+
+    # เลือกแนวต้านที่ "ใกล้ที่สุด" ก่อนเป็นหลัก (ต่างจาก support ที่เลือกจาก
+    # quality_score ล้วนๆ) เพราะการใช้งานจริงของแนวต้านคือหาเป้าหมายขาย/ทำกำไร
+    # ถัดไปที่ "จะเจอก่อน" ไม่ใช่แนวต้านที่แข็งแกร่งที่สุดแต่ไกลลิบ
+    best = min(scored, key=lambda x: x["distance_pct"])
+
+    if best["distance_pct"] <= 1.5:
+        status = "🔴 อยู่ที่แนวต้าน"
+    elif best["distance_pct"] <= 4.0:
+        status = "🟠 ใกล้แนวต้าน"
+    else:
+        status = "—"
+
+    return {
+        "status": status, "level": round(best["level"], 2), "distance_pct": best["distance_pct"],
+        "quality_score": best["quality_score"], "touch_count": best["touch_count"],
+        "volume_confirmed": best["vol_ratio"] >= 1.3, "confluence": best["confluence"],
+        "zone_low": best["zone_low"], "zone_high": best["zone_high"],
+        "zone_label": (f'{best["zone_low"]:.2f}–{best["zone_high"]:.2f}'
+                      if best["zone_high"] > best["zone_low"] else f'{best["level"]:.2f}'),
     }
 
 
@@ -1094,6 +1205,7 @@ def analyze(ticker: str, period: str = "1y", interval: str = "1d", bench_tuple=N
         sq_lbl, bw_now, bw_delta = squeeze_direction(cl)
         age = signal_age(cl)
         sup = support_status(px, df, ep[50], ep[200])
+        res = resistance_status(px, df, ep[50], ep[200])
         wk_trend, wk_chg = weekly_trend(df)
 
         rs20 = rs50 = np.nan
@@ -1121,8 +1233,12 @@ def analyze(ticker: str, period: str = "1y", interval: str = "1d", bench_tuple=N
             "Accum": acc_lb, "Accum Score": acc_sc, "Gem Score": gs, "💎 Gem": gl,
             "Squeeze": sq_lbl, "BW%": bw_now, "BW Δ5d": bw_delta, "Signal Age": age,
             "Support": sup["status"], "Support Level": sup["level"], "Support Dist%": sup["distance_pct"],
+            "Support Zone": sup["zone_label"],
             "Support Quality": sup["quality_score"], "Support Touches": sup["touch_count"],
             "Support Vol Confirmed": sup["volume_confirmed"], "Support Confluence": sup["confluence"],
+            "Resistance": res["status"], "Resistance Zone": res["zone_label"],
+            "Resistance Dist%": res["distance_pct"], "Resistance Quality": res["quality_score"],
+            "Resistance Level": res["level"],
             "Weekly Trend": wk_trend, "Weekly vs EMA20w%": wk_chg,
             "RS 20D": rs20, "RS 50D": rs50,
             "P/E": fnd["pe"], "P/BV": fnd["pb"], "Div%": fnd["div"], "MktCap$B": fnd["mktcap_b"],
@@ -1710,6 +1826,13 @@ def _sty_support(v):
     return "color:#5b7299;"
 
 
+def _sty_resistance(v):
+    v = str(v)
+    if "อยู่ที่แนวต้าน" in v: return "color:#ff3864;font-weight:800;"
+    if "ใกล้แนวต้าน" in v:   return "color:#ffa857;font-weight:700;"
+    return "color:#5b7299;"
+
+
 def _sty_rs(v):
     try:
         f = float(v)
@@ -1976,7 +2099,7 @@ NOTABLE_SIGNALS = ("🔥 Strong Buy", "🚀 Breakout")
 # ตอนนี้ทำให้เป็นค่าคงที่จริงในโค้ด แล้ว fetch_data.py stamp ค่านี้ลงไปในทุก
 # ไฟล์ JSON ที่เซฟ (ดู fetch_data.py) เพื่อให้ข้อมูลในอนาคตกรองตาม version
 # ได้เอง ไม่ต้องจำเองว่า "อย่าเอาผลก่อนวันที่ X มาเทียบ"
-APP_VERSION = "3.13"
+APP_VERSION = "3.15"
 
 LIVE_SCAN_SAFETY_CAP = 100
 
@@ -2478,10 +2601,14 @@ def main():
                 sup_filter = st.multiselect("Support | แนวรับ",
                                             ["🟢 อยู่ที่แนวรับ", "🟡 ใกล้แนวรับ"],
                                             default=[], key="d_sup", placeholder="ทั้งหมด")
+                res_filter = st.multiselect("Resistance | แนวต้าน",
+                                            ["🔴 อยู่ที่แนวต้าน", "🟠 ใกล้แนวต้าน"],
+                                            default=[], key="d_res", placeholder="ทั้งหมด")
 
             show_cols = [c for c in ["Ticker", "Price", "ราคาปิด", "Trend", "Weekly Trend", "RSI", "EMA Pattern",
-                                     "Squeeze", "Support", "Support Level", "Support Dist%",
+                                     "Squeeze", "Support", "Support Zone", "Support Dist%",
                                      "Support Quality", "Support Touches",
+                                     "Resistance", "Resistance Zone", "Resistance Dist%",
                                      "Signal Age", "💎 Gem", "Accum", "RS 20D", "Signal",
                                      "Signal Reason", "Stars"]
                          if c in df.columns]
@@ -2497,6 +2624,9 @@ def main():
             if "Support Touches" in dfv.columns:
                 dfv["Support Touches"] = dfv["Support Touches"].apply(
                     lambda x: f"{int(x)}x" if pd.notna(x) and x > 0 else "—")
+            if "Resistance Dist%" in dfv.columns:
+                dfv["Resistance Dist%"] = dfv["Resistance Dist%"].apply(
+                    lambda x: f"+{x:.1f}%" if pd.notna(x) else "—")
 
             if "Signal Age" in dfv.columns:
                 dfv["Signal Age"] = dfv["Signal Age"].apply(
@@ -2509,6 +2639,7 @@ def main():
                 mask &= df["Weekly Trend"].isin(wk_filter)
             if sq_filter: mask &= df["Squeeze"].isin(sq_filter)
             if sup_filter and "Support" in df.columns: mask &= df["Support"].isin(sup_filter)
+            if res_filter and "Resistance" in df.columns: mask &= df["Resistance"].isin(res_filter)
             if min_gem > 0 and "Gem Score" in df.columns: mask &= df["Gem Score"] >= min_gem
             if min_accum > 0 and "Accum Score" in df.columns: mask &= df["Accum Score"] >= min_accum
             if pat_filter and "EMA Pattern" in df.columns:
@@ -2526,7 +2657,7 @@ def main():
             # เยอะยิ่งช้าเมื่อมีหลายร้อยแถว ตัดคอลัมน์ที่ไม่ใช่ตัวชี้วัดหลักออก
             # (RSI/Squeeze/RS 20D/Accum/EMA Pattern ยังโชว์ค่าปกติ แค่ไม่มีสี)
             smap = {"Signal": _sty_signal, "💎 Gem": _sty_gem,
-                    "Support": _sty_support, "Weekly Trend": _sty_weekly}
+                    "Support": _sty_support, "Resistance": _sty_resistance, "Weekly Trend": _sty_weekly}
             st.markdown(f"**{len(dfv)} หุ้นที่ตรงเงื่อนไข**")
             st.dataframe(make_table(dfv, smap), use_container_width=True, height=520)
 
@@ -2536,7 +2667,7 @@ def main():
                     with st.expander(f"🟢 หุ้นที่อยู่ที่แนวรับ/ใกล้แนวรับ **คุณภาพสูง** (≥6/10) — {len(strong_sup)} ตัว"):
                         st.caption("คุณภาพสูง = ผ่านการทดสอบหลายครั้ง + มี volume ยืนยันตอนเด้งกลับ "
                                   "และ/หรือมีแนวรับซ้อนกันจากหลายวิธีคำนวณ (Confluence)")
-                        strong_cols = [c for c in ["Ticker", "Price", "Support", "Support Level",
+                        strong_cols = [c for c in ["Ticker", "Price", "Support", "Support Zone",
                                                     "Support Dist%", "Support Quality", "Support Touches",
                                                     "Support Vol Confirmed", "Support Confluence"]
                                        if c in strong_sup.columns]
@@ -2705,6 +2836,7 @@ def main():
                 sup_vol_now = row.get("Support Vol Confirmed", False)
                 sup_conf_now = row.get("Support Confluence", False)
 
+                sup_zone_now = row.get("Support Zone", None)
                 sup_badge = ""
                 if sup_now != "—" and pd.notna(sup_level_now):
                     sup_col = "#34f5a4" if "อยู่ที่แนวรับ" in str(sup_now) else "#ffc857"
@@ -2716,12 +2848,35 @@ def main():
                     if sup_conf_now:
                         tags.append("แนวรับซ้อนกัน")
                     tag_str = f" · {' · '.join(tags)}" if tags else ""
+                    # v3.14: โชว์เป็น "โซน" ราคา (เช่น $60.20–$65.40) แทนราคา
+                    # เป๊ะๆจุดเดียว ถ้าแนวรับมาจากหลาย swing low ที่กลุ่มกัน —
+                    # ตรงกับการใช้งานจริงมากกว่า (แนวรับคือโซน ไม่ใช่เส้นตรง)
+                    price_label = f"${sup_zone_now}" if sup_zone_now and sup_zone_now != "—" else f"${sup_level_now:,.2f}"
                     sup_badge = (
                         f'<span style="background:rgba(52,245,164,0.08);border:1px solid {sup_col};'
                         f'border-radius:6px;padding:4px 12px;font-size:0.85rem;font-weight:700;'
                         f'color:{sup_col};">'
-                        f'{sup_now} ${sup_level_now:,.2f} ({sup_dist_now:+.1f}%) · '
+                        f'{sup_now} {price_label} ({sup_dist_now:+.1f}%) · '
                         f'คุณภาพ {sup_quality_now:.1f}/10{tag_str}</span>'
+                    )
+
+                # v3.15: badge แนวต้าน คู่กับแนวรับ — เดิมมีแต่แนวรับ ไม่มี
+                # เป้าหมายขาย/ทำกำไรให้ดูเลย
+                res_now = row.get("Resistance", "—")
+                res_level_now = row.get("Resistance Level", np.nan)
+                res_zone_now = row.get("Resistance Zone", None)
+                res_dist_now = row.get("Resistance Dist%", np.nan)
+                res_quality_now = row.get("Resistance Quality", 0)
+                res_badge = ""
+                if res_now != "—" and pd.notna(res_level_now):
+                    res_col = "#ff3864" if "อยู่ที่แนวต้าน" in str(res_now) else "#ffa857"
+                    res_price_label = f"${res_zone_now}" if res_zone_now and res_zone_now != "—" else f"${res_level_now:,.2f}"
+                    res_badge = (
+                        f'<span style="background:rgba(255,56,100,0.08);border:1px solid {res_col};'
+                        f'border-radius:6px;padding:4px 12px;font-size:0.85rem;font-weight:700;'
+                        f'color:{res_col};">'
+                        f'{res_now} {res_price_label} (+{res_dist_now:.1f}%) · '
+                        f'คุณภาพ {res_quality_now:.1f}/10</span>'
                     )
 
                 st.markdown(
@@ -2744,6 +2899,7 @@ def main():
                     f'border-radius:6px;padding:4px 12px;font-size:0.85rem;font-weight:700;">'
                     f'{sig_now}</span>'
                     f'{sup_badge}'
+                    f'{res_badge}'
                     f'</div>', unsafe_allow_html=True)
                 if sig_reason_now:
                     st.caption(f"เหตุผล: {sig_reason_now}")
@@ -2767,6 +2923,81 @@ def main():
                                 f'{sgn}{dev:.2f}%</div></div>')
                 bdg += '</div>'
                 st.markdown(bdg, unsafe_allow_html=True)
+
+                # ════════════════════════════════════════════════════
+                # v3.15: POSITION SIZING + RISK/REWARD CALCULATOR
+                # ════════════════════════════════════════════════════
+                # เพิ่มตามที่ขอ — ใช้แนวรับเป็นจุดตัดขาดทุนแนะนำ + แนวต้าน
+                # เป็นเป้าหมายทำกำไรแนะนำ แล้วคำนวณจำนวนหุ้นที่ควรซื้อจาก
+                # เงินทุน + % ความเสี่ยงที่ยอมรับได้ต่อไม้ (หลักการบริหารความ
+                # เสี่ยงมาตรฐาน ไม่ใช่การทำนายราคา — เป็นแค่คณิตศาสตร์จาก
+                # ตัวเลขที่ผู้ใช้กรอกเอง) ใช้ key ผูกกับ ticker (sel) เพื่อให้
+                # ค่าเริ่มต้นอัปเดตอัตโนมัติเมื่อสลับหุ้น แต่ยังจำค่าที่เคย
+                # กรอกเองไว้ได้ถ้ากลับมาดูหุ้นตัวเดิมอีกครั้งในเซสชันเดียวกัน
+                with st.expander("🎯 คำนวณการเข้าซื้อ (Position Sizing + Risk/Reward)", expanded=False):
+                    st.caption("⚠️ เครื่องมือคำนวณคณิตศาสตร์จากตัวเลขที่กรอกเอง ไม่ใช่การทำนายราคาหรือคำแนะนำการลงทุน "
+                              "แนวรับ/แนวต้านในอดีตไม่การันตีว่าจะใช้ได้อีกในอนาคต")
+
+                    default_stop = sup_level_now if (sup_now != "—" and pd.notna(sup_level_now)) else round(px_now * 0.95, 2)
+                    default_target = res_level_now if (res_now != "—" and pd.notna(res_level_now)) else round(px_now * 1.10, 2)
+
+                    pc1, pc2 = st.columns(2)
+                    with pc1:
+                        entry_px = st.number_input("💵 ราคาเข้าซื้อ (Entry)", min_value=0.01,
+                                                   value=float(round(px_now, 2)), step=0.5,
+                                                   key=f"pos_entry_{sel}")
+                        stop_px = st.number_input("🛑 จุดตัดขาดทุน (Stop Loss) — default จากแนวรับ",
+                                                  min_value=0.01, value=float(default_stop), step=0.5,
+                                                  key=f"pos_stop_{sel}")
+                        target_px = st.number_input("🎯 เป้าหมายทำกำไร (Target) — default จากแนวต้าน",
+                                                    min_value=0.01, value=float(default_target), step=0.5,
+                                                    key=f"pos_target_{sel}")
+                    with pc2:
+                        account_size = st.number_input("💰 เงินทุนทั้งหมด", min_value=0.0,
+                                                        value=100000.0, step=10000.0,
+                                                        key=f"pos_account_{sel}")
+                        risk_pct = st.slider("⚖️ ยอมรับความเสี่ยงต่อไม้ (% ของเงินทุน)",
+                                             0.25, 5.0, 1.0, step=0.25, key=f"pos_riskpct_{sel}")
+
+                    risk_per_share = entry_px - stop_px
+                    reward_per_share = target_px - entry_px
+
+                    if risk_per_share <= 0:
+                        st.error("⚠️ Stop Loss ต้องต่ำกว่าราคาเข้าซื้อ — เช็คตัวเลขอีกครั้ง")
+                    elif reward_per_share <= 0:
+                        st.error("⚠️ Target ต้องสูงกว่าราคาเข้าซื้อ — เช็คตัวเลขอีกครั้ง")
+                    else:
+                        rr_ratio = reward_per_share / risk_per_share
+                        risk_amount = account_size * risk_pct / 100
+                        shares = int(risk_amount // risk_per_share) if risk_per_share > 0 else 0
+                        position_value = shares * entry_px
+                        pct_of_account = (position_value / account_size * 100) if account_size > 0 else 0
+
+                        rc1, rc2, rc3, rc4 = st.columns(4)
+                        rc1.metric("Risk : Reward", f"1 : {rr_ratio:.2f}")
+                        rc2.metric("ความเสี่ยง/หุ้น", f"${risk_per_share:,.2f}")
+                        rc3.metric("กำไรเป้าหมาย/หุ้น", f"${reward_per_share:,.2f}")
+                        rc4.metric("จำนวนหุ้นที่ควรซื้อ", f"{shares:,} หุ้น")
+
+                        st.markdown(
+                            f'<div style="background:#101c33;border:1px solid #22344f;border-radius:8px;'
+                            f'padding:10px 14px;margin-top:6px;">'
+                            f'<span style="color:#5b7299;font-size:0.85rem;">มูลค่าที่ต้องใช้: '
+                            f'<b style="color:#e8f0ff;">${position_value:,.2f}</b> '
+                            f'({pct_of_account:.1f}% ของเงินทุน) · เสี่ยงสูงสุด: '
+                            f'<b style="color:#ff3864;">${shares * risk_per_share:,.2f}</b> '
+                            f'({risk_pct:.2f}% ของเงินทุน)</span></div>',
+                            unsafe_allow_html=True)
+
+                        if rr_ratio < 1.5:
+                            st.warning(f"⚠️ Risk:Reward ต่ำ (1:{rr_ratio:.2f}) — นักเทรดส่วนใหญ่แนะนำอย่างน้อย 1:1.5-2 "
+                                      "ขึ้นไป ถึงจะคุ้มความเสี่ยงในระยะยาว แม้ Win Rate จะไม่ถึง 50% ก็ตาม")
+                        if pct_of_account > 100:
+                            st.warning("⚠️ มูลค่าที่ต้องใช้เกินเงินทุนทั้งหมด — ลด % ความเสี่ยงต่อไม้ลง "
+                                      "หรือหา Stop Loss ที่ใกล้ราคาเข้าซื้อกว่านี้")
+                        elif pct_of_account > 30:
+                            st.warning(f"⚠️ ไม้นี้ใช้เงินทุนถึง {pct_of_account:.0f}% ของพอร์ต — กระจุกตัวสูง "
+                                      "พิจารณาลดขนาดไม้เพื่อกระจายความเสี่ยงไปหุ้นตัวอื่นด้วย")
 
             st.caption("📈 กราฟจาก TradingView · 🟡 EMA20 · 🔵 EMA50 · 🔴 EMA200 · RSI · MACD")
             tv_chart(sel, height=ch_h, interval=ch_iv)
