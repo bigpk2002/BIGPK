@@ -80,13 +80,19 @@ def compute_sector_heatmap(df: pd.DataFrame) -> list:
     เลย (เหมือน logic เดิมใน app.sector_heatmap_data_live() แต่สร้างจาก df
     ที่มีอยู่แล้วในมือ ไม่เรียก analyze() ซ้ำ/ไม่ยิง Yahoo เพิ่มอีกรอบ)
     คืนค่าเป็น list of dict พร้อมเซฟลง JSON ให้แอปอ่านตรงๆ
+
+    v3.12: เดิมใช้แค่ tickers[:5] (5 ตัวแรกที่พิมพ์ไว้ใน SECTOR_MAP) เป็น
+    "ตัวแทน" ของทั้ง sector ทั้งที่แต่ละ sector มี 16-20 ตัว — ทำให้ Avg
+    Gem/Accum/Bull % สะท้อนแค่บริษัทใหญ่ๆไม่กี่ตัวหัวแถว ไม่ใช่ภาพรวมจริงของ
+    sector ตอนนี้ใช้ ticker ทั้งหมดใน sector แทน เพราะ df ที่ได้มามีข้อมูล
+    ครบทุกตัวอยู่แล้ว (SECTOR_MAP ถูกรวมเข้า all_tickers ตั้งแต่ต้นไฟล์นี้แล้ว)
+    ไม่มีต้นทุนเพิ่มขึ้นเลยจากการใช้ทั้งหมดแทนแค่ 5 ตัว
     """
     rows = []
     if df is None or df.empty or "Ticker" not in df.columns:
         return rows
     for sector, tickers in app.SECTOR_MAP.items():
-        sample = tickers[:5]
-        sub = df[df["Ticker"].isin(sample)]
+        sub = df[df["Ticker"].isin(tickers)]
         if sub.empty:
             continue
         scores = [{
@@ -101,7 +107,7 @@ def compute_sector_heatmap(df: pd.DataFrame) -> list:
             "Avg Accum": round(float(np.mean([s["accum"] for s in scores])), 1),
             "Avg RS 20D": round(float(np.mean([s["rs20"] for s in scores])), 1),
             "Bull %": round(float(np.mean([s["bull"] for s in scores])) * 100, 0),
-            "Sample": ", ".join(sample),
+            "Coverage": f"{len(sub)}/{len(tickers)}",
         })
     rows.sort(key=lambda r: r["Avg Gem Score"], reverse=True)
     return rows
@@ -215,14 +221,24 @@ def main():
 
     generated_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
 
+    # v3.12: stamp เลข version ของโค้ด (app.APP_VERSION) ลงไปในทุกไฟล์ที่เซฟ
+    # เหตุผล: ถ้า logic การคำนวณ signal/แนวรับเปลี่ยนกลางทาง (เช่นรอบนี้ที่
+    # เปลี่ยนแนวรับเป็นรายสัปดาห์ + แก้บั๊กตัดข้อมูลตามตัวอักษร) ข้อมูลเก่ากับ
+    # ใหม่จะเทียบกันตรงๆไม่ได้ — มี app_version ติดไปด้วยเสมอ ทำให้ตอนวิเคราะห์
+    # ย้อนหลัง (forward-test) กรองแยก "ก่อน/หลัง" การเปลี่ยนแปลงได้อัตโนมัติ
+    # ไม่ต้องจำเองว่าห้ามเอาผลก่อนวันที่เท่าไหร่มาเทียบ
+    app_version = getattr(app, "APP_VERSION", "unknown")
+
     os.makedirs(os.path.dirname(OUT_PATH), exist_ok=True)
     with open(OUT_PATH, "w", encoding="utf-8") as f:
-        json.dump({"generated_at": generated_at, "data": df.to_dict(orient="records")},
+        json.dump({"generated_at": generated_at, "app_version": app_version,
+                   "data": df.to_dict(orient="records")},
                    f, default=str, ensure_ascii=False)
-    print(f"บันทึก {OUT_PATH} ({os.path.getsize(OUT_PATH) / 1024:.0f} KB)")
+    print(f"บันทึก {OUT_PATH} ({os.path.getsize(OUT_PATH) / 1024:.0f} KB) [app_version={app_version}]")
 
     with open(ALERTS_PATH, "w", encoding="utf-8") as f:
-        json.dump({"generated_at": generated_at, "new_signals": new_hits}, f, ensure_ascii=False)
+        json.dump({"generated_at": generated_at, "app_version": app_version,
+                   "new_signals": new_hits}, f, ensure_ascii=False)
     print(f"บันทึก {ALERTS_PATH}")
 
     # v3.7: คำนวณ + เซฟ Sector Heatmap พร้อมกันในรอบเดียวกัน (ต่อจาก df ที่มี
@@ -230,7 +246,8 @@ def main():
     try:
         sector_rows = compute_sector_heatmap(df)
         with open(SECTOR_HEATMAP_PATH, "w", encoding="utf-8") as f:
-            json.dump({"generated_at": generated_at, "data": sector_rows}, f, default=str, ensure_ascii=False)
+            json.dump({"generated_at": generated_at, "app_version": app_version,
+                       "data": sector_rows}, f, default=str, ensure_ascii=False)
         print(f"บันทึก {SECTOR_HEATMAP_PATH} ({len(sector_rows)} sectors)")
     except Exception as e:
         print(f"คำนวณ/บันทึก Sector Heatmap ไม่สำเร็จ ({e}) — ข้าม (ไม่กระทบข้อมูลหลักด้านบน)")
@@ -241,7 +258,8 @@ def main():
     # กันไม่ให้สะสมไม่จำกัด (ขัดกับเป้าหมายที่ลด storage bloat)
     snapshot_path = os.path.join(BASE_DIR, "data", f"snapshot_{datetime.date.today().isoformat()}.json")
     with open(snapshot_path, "w", encoding="utf-8") as f:
-        json.dump({"generated_at": generated_at, "data": df.to_dict(orient="records")},
+        json.dump({"generated_at": generated_at, "app_version": app_version,
+                   "data": df.to_dict(orient="records")},
                    f, default=str, ensure_ascii=False)
     print(f"บันทึก snapshot: {snapshot_path}")
 
