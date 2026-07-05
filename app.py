@@ -1,10 +1,15 @@
 # ╔══════════════════════════════════════════════════════════════╗
-# ║   INSTITUTIONAL STOCK SCREENER  —  v3.4 (single-file)        ║
+# ║   INSTITUTIONAL STOCK SCREENER  —  v3.13 (single-file)        ║
 # ║   ข้อมูลหลักดึงอัตโนมัติวันละครั้งหลังตลาดปิด ผ่าน GitHub        ║
 # ║   Action (ดู fetch_data.py + .github/workflows/prefetch.yml)  ║
 # ╚══════════════════════════════════════════════════════════════╝
+# v3.13: หมายเหตุจาก self-audit — comment บล็อกนี้เคยค้างเลข v3.4 ไว้ตลอดช่วง
+# v3.7-v3.12 (ไม่มีใครอัปเดตตามตอนขึ้นเวอร์ชันใหม่ เพราะเป็นแค่ comment ไม่ใช่
+# โค้ดที่รันจริง) ดู CHANGELOG.md สำหรับประวัติแบบละเอียดทุก version แทน —
+# comment สรุปสั้นด้านล่างนี้จะไม่พยายามตามทุก version ให้ครบอีกต่อไป
+#
 # สรุปการเปลี่ยนแปลงสะสมจาก v2.0 เดิม (รายละเอียดเต็มอยู่ใน docstring/comment
-# ของแต่ละฟังก์ชันด้านล่าง):
+# ของแต่ละฟังก์ชันด้านล่าง, และ CHANGELOG.md สำหรับ v3.6 ขึ้นไป):
 #   1. ความแม่นยำ: แก้บั๊ก relative_strength เทียบ "ตำแหน่ง" ข้ามตลาดที่ปฏิทิน
 #      วันเทรดต่างกัน (หุ้นไทย .BK vs SPY) + guard format ของ dividendYield
 #   2. ความเร็ว/เสถียร: ลด network call ต่อ ticker, แยก cache fundamentals
@@ -17,6 +22,10 @@
 #   5. Prefetch architecture (v3.2-3.4): แยก "ดึงข้อมูล" กับ "ดู" ออกจากกัน
 #      สมบูรณ์ — fetch_data.py รันผ่าน GitHub Action วันละครั้งหลังตลาด
 #      สหรัฐฯ+ไทยปิดทั้งคู่ แอปแค่อ่านไฟล์ที่ดึงไว้แล้ว ไม่ยิง Yahoo ตอนคนดูเลย
+#   6. v3.7-v3.12 (สรุปย่อ — ดู CHANGELOG.md ฉบับเต็ม): Weekly Trend filter,
+#      แนวรับใช้กราฟรายสัปดาห์, Sector Heatmap ดึงล่วงหน้าอัตโนมัติ + ใช้ครบ
+#      ทุกตัวใน sector, แก้บั๊กตัดข้อมูล Dashboard ตามตัวอักษร, จำกัดสแกนสด
+#      กันกระทบผู้ใช้อื่น, แจ้งเตือน ticker ที่หาไม่เจอแทนตัดทิ้งเงียบๆ
 import datetime
 import hashlib
 import json
@@ -1889,16 +1898,21 @@ def sector_heatmap_data_live() -> pd.DataFrame:
     v3.8: ไม่ได้ถูกเรียกจาก UI แล้ว (Tab 5 อ่านจาก
     load_prefetched_sector_heatmap() เพียงทางเดียว ไม่มีปุ่มสแกนสดอีกต่อไป
     ตามที่ขอ) เก็บฟังก์ชันนี้ไว้เผื่อรันทดสอบ/debug เองนอก UI เท่านั้น
+
+    v3.12: ใช้ ticker ทั้งหมดต่อ sector แทน tickers[:5] เดิม ให้ตรงกับ
+    compute_sector_heatmap() ใน fetch_data.py (ดูเหตุผลที่นั่น) — หมายเหตุ:
+    ถ้าไม่มี bundle เลย (branch "else" ด้านล่าง) จะยิง Yahoo สดต่อ ticker
+    เยอะขึ้นกว่าเดิมมาก (~18 ตัว/sector แทน 5 ตัว) แต่เพราะฟังก์ชันนี้ใช้
+    debug นอก UI เท่านั้น ไม่กระทบผู้ใช้จริง จึงเลือกความแม่นยำมากกว่าความไว
     """
     _, bundle_df = load_prefetched_bundle()
     use_bundle = bundle_df is not None and not bundle_df.empty and "Ticker" in bundle_df.columns
 
     rows = []
     for sector, tickers in SECTOR_MAP.items():
-        sample = tickers[:5]
         scores = []
         if use_bundle:
-            sub = bundle_df[bundle_df["Ticker"].isin(sample)]
+            sub = bundle_df[bundle_df["Ticker"].isin(tickers)]
             for _, d in sub.iterrows():
                 scores.append({
                     "gem": d.get("Gem Score", 0) or 0,
@@ -1907,7 +1921,7 @@ def sector_heatmap_data_live() -> pd.DataFrame:
                     "bull": 1 if "Bull" in str(d.get("Trend", "")) else 0,
                 })
         else:
-            for tk in sample:
+            for tk in tickers:
                 d = analyze(tk)
                 if d:
                     scores.append({
@@ -1923,7 +1937,7 @@ def sector_heatmap_data_live() -> pd.DataFrame:
                 "Avg Accum": round(np.mean([s["accum"] for s in scores]), 1),
                 "Avg RS 20D": round(np.mean([s["rs20"] for s in scores]), 1),
                 "Bull %": round(np.mean([s["bull"] for s in scores]) * 100, 0),
-                "Sample": ", ".join(sample),
+                "Coverage": f"{len(scores)}/{len(tickers)}",
             })
     return pd.DataFrame(rows).sort_values("Avg Gem Score", ascending=False)
 
@@ -1948,6 +1962,23 @@ import streamlit as st
 
 
 NOTABLE_SIGNALS = ("🔥 Strong Buy", "🚀 Breakout")
+
+# v3.10: จำกัดขนาดการสแกน "สด" (กดปุ่ม Run Screener) ไม่ให้ใหญ่เกินไป — เพราะ
+# Streamlit Community Cloud (free tier) รันทุก session บนโปรเซสเดียวกัน สแกนสด
+# ก้อนใหญ่ของคนนึงจะไปหน่วงคนอื่นที่เปิดแอปพร้อมกันด้วย การสแกนเต็ม Universe
+# จริงๆ ให้เป็นหน้าที่ของ GitHub Action ตอนกลางคืนแทน (คนละโปรเซส ไม่กระทบกัน)
+# v3.12: เดิมเลข version (เช่น "v3.8") เป็นแค่ข้อความ hardcode อยู่ใน HTML
+# header เท่านั้น ไม่มีที่อื่นในโค้ดอ้างอิงถึงเลย ทำให้ไม่มีทางรู้อัตโนมัติว่า
+# ข้อมูลที่ fetch_data.py เคยเซฟไว้ (latest_scan.json/alerts.json/snapshot)
+# มาจากโค้ด version ไหน — เวลาจะทำ forward-test เทียบผลสัญญาณย้อนหลัง ถ้ามี
+# การเปลี่ยน logic กลางทาง (เช่นรอบนี้ที่เปลี่ยนแนวรับเป็นรายสัปดาห์ + แก้บั๊ก
+# ตัดข้อมูลตามตัวอักษร) จะไม่มีทางแยกออกว่าข้อมูลไหน "ก่อน/หลัง" การเปลี่ยนนั้น
+# ตอนนี้ทำให้เป็นค่าคงที่จริงในโค้ด แล้ว fetch_data.py stamp ค่านี้ลงไปในทุก
+# ไฟล์ JSON ที่เซฟ (ดู fetch_data.py) เพื่อให้ข้อมูลในอนาคตกรองตาม version
+# ได้เอง ไม่ต้องจำเองว่า "อย่าเอาผลก่อนวันที่ X มาเทียบ"
+APP_VERSION = "3.13"
+
+LIVE_SCAN_SAFETY_CAP = 100
 
 
 def detect_new_signals(current_df: pd.DataFrame, last_signals: dict) -> list:
@@ -2088,10 +2119,16 @@ def load_prefetched_sector_heatmap():
     return None, pd.DataFrame()
 
 
-def get_with_bundle_fallback(tickers: list, bundle_df: pd.DataFrame, max_live_fallback: int = 15) -> pd.DataFrame:
+def get_with_bundle_fallback(tickers: list, bundle_df: pd.DataFrame, max_live_fallback: int = 15) -> tuple:
     """ดึงข้อมูลของ tickers ที่ต้องการจาก bundle ที่ดึงไว้ล่วงหน้าก่อน ถ้ามีบาง
     ticker ไม่อยู่ใน bundle (เช่น พิมพ์ ticker แปลกๆใน Custom) ค่อย live fallback
-    ทีละตัวสำหรับส่วนที่ขาดเท่านั้น (ใหม่ v3.2)"""
+    ทีละตัวสำหรับส่วนที่ขาดเท่านั้น (ใหม่ v3.2)
+
+    v3.12: เดิมถ้าหา ticker ไม่เจอเกิน max_live_fallback ตัว (หรือ live fallback
+    เองก็ยังหาไม่เจอ เช่น พิมพ์ผิด/delisted) จะถูกตัดทิ้งแบบเงียบๆ ไม่มีการ
+    แจ้งอะไรเลย ผู้ใช้จะงงว่าทำไมตารางมีแถวน้อยกว่าที่คาด — ตอนนี้คืนค่าเป็น
+    (DataFrame, dropped: list) ให้ผู้เรียกตัดสินใจแจ้งเตือนเอง (เช่น st.warning)
+    """
     if bundle_df is None or bundle_df.empty or "Ticker" not in bundle_df.columns:
         have = pd.DataFrame()
         missing = list(tickers)
@@ -2099,12 +2136,22 @@ def get_with_bundle_fallback(tickers: list, bundle_df: pd.DataFrame, max_live_fa
         have = bundle_df[bundle_df["Ticker"].isin(tickers)].copy()
         found = set(have["Ticker"].tolist())
         missing = [t for t in tickers if t not in found]
-    if missing and len(missing) <= max_live_fallback:
-        extra_rows = [analyze(tk) for tk in missing]
-        extra_rows = [r for r in extra_rows if r]
-        if extra_rows:
-            have = pd.concat([have, pd.DataFrame(extra_rows)], ignore_index=True) if not have.empty else pd.DataFrame(extra_rows)
-    return have
+
+    dropped = []
+    if missing:
+        if len(missing) <= max_live_fallback:
+            valid_extra = []
+            for tk in missing:
+                r = analyze(tk)
+                if r:
+                    valid_extra.append(r)
+                else:
+                    dropped.append(tk)  # หาไม่เจอแม้ลอง live fallback แล้ว (พิมพ์ผิด/delisted จริง)
+            if valid_extra:
+                have = pd.concat([have, pd.DataFrame(valid_extra)], ignore_index=True) if not have.empty else pd.DataFrame(valid_extra)
+        else:
+            dropped = missing  # เกิน threshold ไม่ลอง live fallback เลย (กันยิง Yahoo เยอะเกินไป)
+    return have, dropped
 
 
 st.set_page_config(
@@ -2116,13 +2163,13 @@ st.set_page_config(
 inject_css()
 
 def main():
-    st.markdown("""
+    st.markdown(f"""
     <div class="hud-frame" style="text-align:center;">
         <div class="hud-corner tl"></div><div class="hud-corner tr"></div>
         <div class="hud-corner bl"></div><div class="hud-corner br"></div>
         <h1 style="font-size:1.9rem;margin:0;letter-spacing:0.03em;">
             <span style="color:#ffffff;">INSTITUTIONAL STOCK SCREENER</span>
-            <span style="font-size:0.85rem;color:var(--cyan);font-family:'Share Tech Mono',monospace;margin-left:8px;">v3.9.1</span>
+            <span style="font-size:0.85rem;color:var(--cyan);font-family:'Share Tech Mono',monospace;margin-left:8px;">v{APP_VERSION}</span>
         </h1>
         <p style="color:var(--text-dim);font-size:0.85rem;margin:6px 0 0 0;font-family:'Chakra Petch',sans-serif;letter-spacing:0.04em;">
             PRECISION MATH &nbsp;//&nbsp; MULTI-MARKET &nbsp;//&nbsp; HIDDEN GEM ENGINE &nbsp;//&nbsp; BACKTESTER
@@ -2168,12 +2215,17 @@ def main():
             use_rs = st.checkbox("คำนวณ RS vs SPY", value=True,
                                   help="ช้าขึ้นเล็กน้อย แต่ได้ข้อมูลสำคัญ")
 
-        max_tk = st.slider("Max Tickers | จำนวนหุ้นสูงสุด", 10, 300, 50, step=10)
+        max_tk = st.slider("Max Tickers | จำนวนหุ้นสูงสุด", 10, 300, 50, step=10,
+                           help="v3.11: มีผลเฉพาะตอนกด 🚀 Run Screener (สแกนสด) เท่านั้น — "
+                                "ข้อมูลที่ดึงไว้ล่วงหน้าอัตโนมัติ (ค่าเริ่มต้นตอนเปิดแอป ไม่ต้องกดอะไร) "
+                                "จะแสดงครบทุกตัวใน Universe เสมอ ไม่ถูกจำกัดด้วยค่านี้")
 
         st.markdown("---")
         run_btn = st.button("🚀 Run Screener | สแกนสดเดี๋ยวนี้", use_container_width=True,
                             help="ปกติไม่ต้องกดเลย — ข้อมูลมาจากรอบดึงอัตโนมัติทุกวันหลังตลาดปิด อยู่แล้ว "
-                                 "กดปุ่มนี้เฉพาะตอนอยากได้ข้อมูลสดเดี๋ยวนี้ ไม่รอรอบถัดไป")
+                                 "กดปุ่มนี้เฉพาะตอนอยากได้ข้อมูลสดเดี๋ยวนี้ ไม่รอรอบถัดไป "
+                                 f"(จำกัดสแกนสดไว้ไม่เกิน {LIVE_SCAN_SAFETY_CAP} หุ้น เพื่อไม่ให้กระทบ "
+                                 "คนอื่นที่เปิดแอปพร้อมกัน — universe ใหญ่กว่านี้รอรอบอัตโนมัติแทน)")
 
         with st.expander("💾 Export | ส่งออกข้อมูล"):
             if not st.session_state.df.empty:
@@ -2188,7 +2240,7 @@ def main():
             st.caption("ใช้ลบเฉพาะ cache ของการกด 'Run Screener' สแกนสดเอง "
                       "ไม่กระทบข้อมูล prefetch อัตโนมัติทุกวันหลังตลาดปิด (อันนั้นอัปเดตเองจาก GitHub Action)")
             if st.button("ล้าง Cache ของ Universe นี้", use_container_width=True):
-                tickers_for_clear = resolve_tickers(universe, sector_choice, custom_input)[:max_tk]
+                tickers_for_clear = resolve_tickers(universe, sector_choice, custom_input)[:max_tk][:LIVE_SCAN_SAFETY_CAP]
                 if clear_cache_for(universe, tuple(tickers_for_clear), period, interval):
                     st.success("ล้างแล้ว — กด Run Screener เพื่อสแกนสดใหม่")
                 else:
@@ -2204,12 +2256,20 @@ def main():
     tickers_all = resolve_tickers(universe, sector_choice, custom_input)
     tickers_use = tickers_all[:max_tk]
 
+    # v3.10: ดูคอมเมนต์ที่ LIVE_SCAN_SAFETY_CAP (module-level ด้านบน) — จำกัด
+    # ขนาดสแกนสดไว้ต่ำกว่า max_tk เสมอ กันไม่ให้กระทบผู้ใช้คนอื่นบน server เดียวกัน
+    live_tickers_use = tickers_use[:LIVE_SCAN_SAFETY_CAP]
+
     auto_loaded = False
     bundle_gen_at = None
     new_signal_hits = []
 
     # ── Run screener (กดเอง = สแกนสดตอนนี้เลย ไม่รอรอบ prefetch ทุกวันหลังตลาดปิด) ──
     if run_btn:
+        if len(tickers_use) > LIVE_SCAN_SAFETY_CAP:
+            st.warning(f"⚠️ จำกัดสแกนสดไว้ที่ {LIVE_SCAN_SAFETY_CAP} หุ้นแรก (เลือกไว้ {len(tickers_use)} ตัว) "
+                      f"เพื่อไม่ให้การสแกนสดของคุณไปทำให้คนอื่นที่เปิดแอปพร้อมกันหน่วง (แชร์ server "
+                      f"เดียวกัน) ถ้าต้องการดูครบทุกตัวในกลุ่มนี้ รอรอบอัตโนมัติหลังตลาดปิดแทนได้เลย")
         bench_tuple = None
         if use_rs:
             with st.spinner("ดึงข้อมูล SPY เป็น benchmark…"):
@@ -2220,16 +2280,16 @@ def main():
                     log_err("fetch SPY benchmark", e)
                     st.warning("ดึงข้อมูล SPY ไม่สำเร็จ — จะสแกนต่อโดยไม่มี Relative Strength")
 
-        prog = st.progress(0.0, text=f"⚡ กำลังสแกน 0/{len(tickers_use)} หุ้น…")
+        prog = st.progress(0.0, text=f"⚡ กำลังสแกน 0/{len(live_tickers_use)} หุ้น…")
 
         def _on_progress(done, total):
             prog.progress(done / total if total else 1.0, text=f"⚡ กำลังสแกน {done}/{total} หุ้น…")
 
-        df = batch_scan(tuple(tickers_use), period, interval, bench_tuple, progress_cb=_on_progress)
+        df = batch_scan(tuple(live_tickers_use), period, interval, bench_tuple, progress_cb=_on_progress)
         prog.empty()
         st.session_state.df = df
         st.session_state.ran = True
-        save_disk_cache(universe, tuple(tickers_use), period, interval, df)
+        save_disk_cache(universe, tuple(live_tickers_use), period, interval, df)
 
         # ── แจ้งเตือนสัญญาณใหม่ (เทียบกับสแกนสดของตัวเองรอบก่อน — แยกจากของ prefetch) ──
         last_sig = load_last_signals(universe)
@@ -2247,8 +2307,17 @@ def main():
     else:
         bundle_gen_at, bundle_df = load_prefetched_bundle()
         if bundle_gen_at:
-            have = get_with_bundle_fallback(tickers_use, bundle_df)
+            # v3.11: BUG FIX — เดิมกรอง bundle ด้วย tickers_use (ตัดตาม
+            # max_tk แบบเรียงตัวอักษรก่อนแล้วค่อยกรอง) แปลว่าต่อให้ bundle มี
+            # ข้อมูลครบทั้ง universe (503 ตัวของ S&P 500) อยู่แล้ว แอปก็จะโชว์
+            # ให้เห็นแค่ "ตัวแรกตามตัวอักษร" ของ max_tk เสมอ (ไม่เกี่ยวกับมูลค่า
+            # บริษัท/สัญญาณ/คุณภาพใดๆ) หุ้นที่น่าสนใจแต่ชื่อขึ้นต้นด้วยตัวอักษร
+            # ท้ายๆจะไม่มีทางโผล่มาให้เห็นเลย ทั้งที่กรองจาก bundle ไม่มีต้นทุน
+            # เพิ่มอะไรเลย (ข้อมูลอยู่ในหน่วยความจำแล้ว) — ตอนนี้ใช้ tickers_all
+            # (universe เต็ม) แทน ไม่ตัดทิ้งอะไรก่อนกรองอีกต่อไป
+            have, dropped = get_with_bundle_fallback(tickers_all, bundle_df)
             st.session_state.df = have
+            st.session_state.dropped_tickers = dropped
             st.session_state.ran = True
             auto_loaded = True
             new_signal_hits = load_prefetch_alerts()
@@ -2273,8 +2342,17 @@ def main():
                 f'{len(df)} หุ้น</span>'
                 f'<span style="color:#44587f;font-size:0.75rem;">— ไม่ต้องรอ ไม่ต้องกด Run</span>'
                 f'</div>', unsafe_allow_html=True)
+            # v3.12: เดิม ticker ที่หาไม่เจอเลยใน bundle (delisted/rate-limit
+            # ตอนสแกน/พิมพ์ผิดใน Custom) จะถูกตัดทิ้งแบบเงียบๆ ไม่บอกใครเลย
+            # ตอนนี้บอกจำนวนให้รู้ตัว (ใช้ caption เบาๆ ไม่ใช่ warning สีแดง
+            # เพราะสำหรับ universe ใหญ่ๆ มีหลุดไปบ้างเป็นเรื่องปกติ ไม่ใช่
+            # ความผิดพลาด — ดูเหตุผลได้จาก fetch_data.py log ของแต่ละวัน)
+            dropped = st.session_state.get("dropped_tickers", [])
+            if dropped:
+                dn = ", ".join(dropped[:15]) + (f" +{len(dropped)-15} ตัว" if len(dropped) > 15 else "")
+                st.caption(f"ℹ️ {len(dropped)} ตัวไม่มีข้อมูล (delisted/rate-limit ชั่วคราว/พิมพ์ผิด): {dn}")
         else:
-            age_lbl = cache_age_label(universe, tuple(tickers_use), period, interval)
+            age_lbl = cache_age_label(universe, tuple(live_tickers_use), period, interval)
             st.markdown(
                 f'<div style="background:#101c33;border:1px solid #34f5a4;border-radius:8px;'
                 f'padding:8px 14px;margin-bottom:10px;display:flex;align-items:center;gap:10px;">'
@@ -2486,6 +2564,8 @@ def main():
                     if tk not in st.session_state.watchlist:
                         st.session_state.watchlist.append(tk)
                         save_watchlist(st.session_state.watchlist)  # persist ทันที (ใหม่ v3.0)
+                        st.session_state.pop("wl_df", None)  # v3.13: กัน watchlist tab โชว์ผลค้างเก่า
+                        st.session_state.pop("wl_dropped", None)
                         st.success(f"เพิ่ม {tk} แล้ว")
 
     # ════════════════════════════════════════════════════════
@@ -2889,7 +2969,7 @@ def main():
     # ════════════════════════════════════════════════════════
     with tab5:
         st.markdown("### 🗺️ Sector Heatmap — Money Flow")
-        st.caption("สแกน 5 หุ้นตัวแทนต่อ Sector เพื่อวัด momentum และ accumulation")
+        st.caption("เฉลี่ยจากหุ้นทั้งหมดในแต่ละ Sector (16-20 ตัว/sector) เพื่อวัด momentum และ accumulation")
 
         # v3.8: ตัดปุ่ม "สแกนสด/Live Rescan" ออกตามที่ขอ — ข้อมูลมาจากรอบ
         # prefetch อัตโนมัติหลังตลาดปิดเพียงทางเดียวเท่านั้น (เหมือนข้อมูลหุ้น
@@ -2956,6 +3036,12 @@ def main():
                 if tk not in st.session_state.watchlist:
                     st.session_state.watchlist.append(tk)
                     save_watchlist(st.session_state.watchlist)
+                    # v3.13: เจอระหว่าง self-audit — เดิมผลสแกน/warning ค้างเก่า
+                    # (wl_df/wl_dropped) อยู่ต่อจนกว่าจะกด Scan All ใหม่ ทำให้
+                    # ตารางไม่รวมหุ้นที่เพิ่งเพิ่ม และ warning อาจโชว์ชื่อหุ้นที่
+                    # ลบไปแล้วค้างอยู่ — เคลียร์ทิ้งทันทีที่ list เปลี่ยน
+                    st.session_state.pop("wl_df", None)
+                    st.session_state.pop("wl_dropped", None)
         with wc3:
             st.markdown("<br>", unsafe_allow_html=True)
             rem_tk = st.selectbox("ลบออก | Remove", ["—"] + st.session_state.watchlist, key="wl_rem")
@@ -2963,6 +3049,8 @@ def main():
                 if st.button("🗑️ ลบ", key="wl_del"):
                     st.session_state.watchlist.remove(rem_tk)
                     save_watchlist(st.session_state.watchlist)
+                    st.session_state.pop("wl_df", None)
+                    st.session_state.pop("wl_dropped", None)
                     st.rerun()
 
         if not st.session_state.watchlist:
@@ -2976,9 +3064,19 @@ def main():
             if scan_wl:
                 with st.spinner("กำลังวิเคราะห์ Watchlist…"):
                     _, bundle_df_wl = load_prefetched_bundle()
-                    wl_df_result = get_with_bundle_fallback(
+                    wl_df_result, wl_dropped = get_with_bundle_fallback(
                         st.session_state.watchlist, bundle_df_wl, max_live_fallback=50)
                     st.session_state["wl_df"] = wl_df_result
+                    st.session_state["wl_dropped"] = wl_dropped
+
+            # v3.12: Watchlist เป็น list ที่คนพิมพ์เองทีละตัว ต่างจาก Universe
+            # ใหญ่ๆ ตรงที่ทุกตัวที่หายไปมีความหมาย (พิมพ์ผิด/delisted/ชื่อไม่ตรง
+            # ตลาด) เดิมหายไปแบบเงียบๆ ไม่รู้ตัวเลยว่าทำไมตารางน้อยกว่ารายชื่อ
+            # ที่มี ตอนนี้เตือนชัดเจนกว่า Dashboard หลัก (ใช้ warning ไม่ใช่ caption)
+            if st.session_state.get("wl_dropped"):
+                st.warning(f"⚠️ หาไม่เจอ {len(st.session_state['wl_dropped'])} ตัว: "
+                          f"{', '.join(st.session_state['wl_dropped'])} — เช็คว่าพิมพ์ชื่อถูกไหม "
+                          f"(เช่นหุ้นไทยต้องมี .BK ต่อท้าย เช่น PTT.BK) หรือหุ้นอาจ delisted ไปแล้ว")
 
             if "wl_df" in st.session_state and not st.session_state["wl_df"].empty:
                 wdf = st.session_state["wl_df"]
