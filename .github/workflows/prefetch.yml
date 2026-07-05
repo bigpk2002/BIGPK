@@ -42,6 +42,14 @@ jobs:
       # ข้ามรอบ schedule ให้) ไฟล์ .last_run มีแค่วันที่และจำนวนหุ้น
       # ขนาดเล็กมาก (< 50 bytes) ไม่กระทบขนาด repo แต่อย่างใด
       - name: Keep-alive commit (กัน GitHub หยุด schedule)
+        # v3.7: เดิม step นี้รันเฉพาะตอน step ก่อนหน้า (รัน fetch_data.py)
+        # สำเร็จเท่านั้น (ค่า default ของ GitHub Actions) ถ้า fetch ล้มเหลว
+        # (error หลุด/timeout) step นี้จะไม่ได้รันไปด้วย ทำให้ repo ไม่มี
+        # activity ในวันนั้น พอสะสมหลายวันเข้า GitHub จะเริ่มมองว่า repo
+        # "เงียบ" แล้วปิด schedule อัตโนมัติ (วนเป็นวงจร: fetch fail → ไม่มี
+        # commit → schedule โดนปิด → fetch ไม่ถูกเรียกอีกเลย) ใส่ if: always()
+        # ให้ step นี้พยายาม commit เสมอไม่ว่า step ก่อนจะสำเร็จหรือไม่
+        if: always()
         run: |
           SCAN_COUNT=$(python3 -c "
           import json, os
@@ -59,15 +67,27 @@ jobs:
           git push || true
 
       - name: อัปโหลดข้อมูลล่าสุดไปที่ GitHub Release
+        # v3.7: if: always() เหมือนกับ step keep-alive ด้านบน — เผื่อ fetch
+        # ล้มเหลวกลางทางแต่ยังมีไฟล์บางส่วนจาก chunk ที่ทำสำเร็จไปแล้ว (ดู
+        # fetch_data.py: ไม่บันทึกทับถ้าผลลัพธ์ว่างเปล่าทั้งหมด) ก็ยังอัปโหลด
+        # เท่าที่มีได้ ไม่ปล่อยให้ step นี้ถูกข้ามไปเฉยๆ
+        if: always()
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          if [ ! -f data/latest_scan.json ]; then
+            echo "ไม่มี data/latest_scan.json (fetch step อาจล้มเหลว/ยังไม่เคยรันสำเร็จ) — ข้ามการอัปโหลด"
+            exit 0
+          fi
           if ! gh release view latest-data >/dev/null 2>&1; then
             gh release create latest-data \
               --title "ข้อมูลล่าสุด (อัปเดตอัตโนมัติ)" \
               --notes "ไม่ใช่ release โค้ดจริง ใช้เก็บไฟล์ข้อมูลที่ดึงอัตโนมัติทุกวันเท่านั้น"
           fi
-          gh release upload latest-data data/latest_scan.json data/alerts.json --clobber
+          FILES="data/latest_scan.json"
+          [ -f data/alerts.json ] && FILES="$FILES data/alerts.json"
+          [ -f data/sector_heatmap.json ] && FILES="$FILES data/sector_heatmap.json"
+          gh release upload latest-data $FILES --clobber
 
       - name: สร้าง Historical Snapshot ของวันนี้
         env:
@@ -97,3 +117,20 @@ jobs:
               gh release delete "$tag" --yes --cleanup-tag || true
             fi
           done
+
+      # v3.7: เดิมถ้ารอบไหนพัง จะไม่มีใครรู้จนกว่าจะสังเกตเองว่าข้อมูลในแอป
+      # ไม่อัปเดตมาหลายวัน — ใส่แจ้งเตือนทันทีที่ job ล้มเหลว (ไม่ว่า step
+      # ไหนก็ตาม) ผ่าน Telegram เดียวกับที่ใช้แจ้งสัญญาณใหม่อยู่แล้ว
+      - name: แจ้งเตือนถ้า Job ล้มเหลว
+        if: failure()
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          if [ -n "$TELEGRAM_BOT_TOKEN" ] && [ -n "$TELEGRAM_CHAT_ID" ]; then
+            curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+              -d chat_id="${TELEGRAM_CHAT_ID}" \
+              -d text="⚠️ Prefetch workflow ล้มเหลว ($(date -u +%F' '%T) UTC) — เช็ค Actions log ด่วน"
+          else
+            echo "ไม่ได้ตั้ง Telegram secrets — ข้ามการแจ้งเตือน"
+          fi
