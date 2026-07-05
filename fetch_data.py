@@ -16,6 +16,7 @@ import json
 import os
 import time
 
+import numpy as np
 import pandas as pd
 
 import app  # ดึง analyze / batch_scan / resolve_tickers / UNIVERSE_OPTIONS / SECTOR_MAP
@@ -25,6 +26,10 @@ import yfinance as yf
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 OUT_PATH = os.path.join(BASE_DIR, "data", "latest_scan.json")
 ALERTS_PATH = os.path.join(BASE_DIR, "data", "alerts.json")
+# v3.7: คำนวณ Sector Heatmap ไว้ล่วงหน้าที่นี่เลย (ต่อจาก df ที่สแกนเสร็จ
+# อยู่แล้วในรอบนี้ — ticker ของทุก sector ถูกรวมเข้า all_tickers ไปแล้ว
+# ไม่ต้องยิง Yahoo เพิ่มอีกรอบ) แทนที่จะให้แอปต้องรอคนกดปุ่มคำนวณสดเอง
+SECTOR_HEATMAP_PATH = os.path.join(BASE_DIR, "data", "sector_heatmap.json")
 
 # v3.5: GitHub Actions ตั้ง GITHUB_REPOSITORY ให้อัตโนมัติเป็น "owner/repo"
 # ใช้ดึง URL ของ Release "latest-data" รอบก่อนหน้า (ก่อนรอบนี้จะเขียนทับ)
@@ -67,6 +72,39 @@ def notify_telegram_from_env(message: str) -> bool:
     except Exception as e:
         print(f"ส่ง Telegram ไม่สำเร็จ: {e}")
         return False
+
+
+def compute_sector_heatmap(df: pd.DataFrame) -> list:
+    """
+    v3.7: คำนวณ Sector Heatmap ต่อจาก df ที่สแกนเสร็จแล้วในรอบ prefetch นี้
+    เลย (เหมือน logic เดิมใน app.sector_heatmap_data_live() แต่สร้างจาก df
+    ที่มีอยู่แล้วในมือ ไม่เรียก analyze() ซ้ำ/ไม่ยิง Yahoo เพิ่มอีกรอบ)
+    คืนค่าเป็น list of dict พร้อมเซฟลง JSON ให้แอปอ่านตรงๆ
+    """
+    rows = []
+    if df is None or df.empty or "Ticker" not in df.columns:
+        return rows
+    for sector, tickers in app.SECTOR_MAP.items():
+        sample = tickers[:5]
+        sub = df[df["Ticker"].isin(sample)]
+        if sub.empty:
+            continue
+        scores = [{
+            "gem": r.get("Gem Score", 0) or 0,
+            "accum": r.get("Accum Score", 0) or 0,
+            "rs20": r.get("RS 20D", 0) or 0,
+            "bull": 1 if "Bull" in str(r.get("Trend", "")) else 0,
+        } for _, r in sub.iterrows()]
+        rows.append({
+            "Sector": sector,
+            "Avg Gem Score": round(float(np.mean([s["gem"] for s in scores])), 1),
+            "Avg Accum": round(float(np.mean([s["accum"] for s in scores])), 1),
+            "Avg RS 20D": round(float(np.mean([s["rs20"] for s in scores])), 1),
+            "Bull %": round(float(np.mean([s["bull"] for s in scores])) * 100, 0),
+            "Sample": ", ".join(sample),
+        })
+    rows.sort(key=lambda r: r["Avg Gem Score"], reverse=True)
+    return rows
 
 
 def load_old_signals() -> dict:
@@ -186,6 +224,16 @@ def main():
     with open(ALERTS_PATH, "w", encoding="utf-8") as f:
         json.dump({"generated_at": generated_at, "new_signals": new_hits}, f, ensure_ascii=False)
     print(f"บันทึก {ALERTS_PATH}")
+
+    # v3.7: คำนวณ + เซฟ Sector Heatmap พร้อมกันในรอบเดียวกัน (ต่อจาก df ที่มี
+    # อยู่แล้ว ไม่ยิง Yahoo เพิ่ม) แอปจะโหลดไฟล์นี้แสดงอัตโนมัติโดยไม่ต้องกดปุ่ม
+    try:
+        sector_rows = compute_sector_heatmap(df)
+        with open(SECTOR_HEATMAP_PATH, "w", encoding="utf-8") as f:
+            json.dump({"generated_at": generated_at, "data": sector_rows}, f, default=str, ensure_ascii=False)
+        print(f"บันทึก {SECTOR_HEATMAP_PATH} ({len(sector_rows)} sectors)")
+    except Exception as e:
+        print(f"คำนวณ/บันทึก Sector Heatmap ไม่สำเร็จ ({e}) — ข้าม (ไม่กระทบข้อมูลหลักด้านบน)")
 
     # v3.5: เก็บ snapshot รายวันแยกไฟล์ (ลงวันที่ในชื่อไฟล์) ไว้ย้อนดูภายหลัง
     # ว่าระบบแม่นแค่ไหนจริง — ไฟล์นี้จะถูก GitHub Action เอาไปสร้างเป็น release
