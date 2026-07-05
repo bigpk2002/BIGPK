@@ -32,6 +32,7 @@ from zoneinfo import ZoneInfo
 import numpy as np
 import pandas as pd
 import streamlit as st
+import streamlit.components.v1 as components
 import yfinance as yf
 
 logging.basicConfig(level=logging.WARNING, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -1778,6 +1779,64 @@ def info_card(label: str, value: str, color="#ffffff", sub="") -> str:
             f'</div>')
 
 
+def render_animated_metric_cards(cards: list, height: int = 180) -> None:
+    """
+    v3.9: การ์ดตัวเลขสรุปบน Dashboard เดิมโชว์ตัวเลขนิ่งๆ ทันที ตอนนี้ทำให้
+    "นับวิ่งขึ้น" ทุกครั้งที่สลับ Universe หรือข้อมูลรีเฟรชใหม่ (เหมือนเลข
+    ยอดวิ่งของเว็บสถิติทั่วไป) — ต้องใช้ st.components.v1.html() แทน
+    st.markdown() ธรรมดา เพราะ st.markdown ไม่รัน <script> (โดน sanitize
+    ออกด้วยเหตุผลด้านความปลอดภัย) components.html วาดใน iframe แยก ทำให้ต้อง
+    ประกาศ CSS สีพื้นฐานซ้ำในนี้เอง (ไม่ได้สืบทอดจากธีมหลักของแอป)
+
+    animate จาก 0 ทุกรอบ (ไม่ได้ต่อจากค่าก่อนหน้า) เพราะแต่ละ rerun ของ
+    Streamlit สร้าง iframe ใหม่ ไม่มี state เดิมให้จำต่อ — ผลคือพอสลับ
+    Universe/รีเฟรชข้อมูล ตัวเลขจะวิ่งขึ้นให้เห็นทุกครั้งตามที่ต้องการพอดี
+
+    cards: list ของ dict {label, value, color, decimals(optional, default 0)}
+    """
+    cards_markup = ""
+    for c in cards:
+        val = c["value"] if pd.notna(c["value"]) else 0
+        cards_markup += (
+            f'<div class="ic" style="border-left-color:{c["color"]};">'
+            f'<div class="lbl">{c["label"]}</div>'
+            f'<div class="val count-num" data-target="{val}" '
+            f'data-decimals="{c.get("decimals", 0)}" style="color:{c["color"]};">0</div>'
+            f'</div>'
+        )
+
+    html = f"""
+    <style>
+      body {{ margin:0; background:transparent; }}
+      .wrap {{ display:flex; gap:10px; flex-wrap:wrap; font-family:'Share Tech Mono',monospace; }}
+      .ic {{ background:#0e1626; border:1px solid #22344f; border-left:3px solid #fff;
+             border-radius:5px; padding:14px 16px; min-width:110px; box-sizing:border-box; }}
+      .lbl {{ color:#5b7299; font-size:0.68rem; font-weight:600; text-transform:uppercase;
+              letter-spacing:0.08em; margin-bottom:6px; font-family:'Chakra Petch',sans-serif; }}
+      .val {{ font-size:1.45rem; font-weight:700; line-height:1.2; }}
+    </style>
+    <div class="wrap">{cards_markup}</div>
+    <script>
+      document.querySelectorAll('.count-num').forEach(function(el) {{
+        var target = parseFloat(el.getAttribute('data-target')) || 0;
+        var decimals = parseInt(el.getAttribute('data-decimals')) || 0;
+        var duration = 700;
+        var start = performance.now();
+        function tick(now) {{
+          var p = Math.min((now - start) / duration, 1);
+          var eased = 1 - Math.pow(1 - p, 3);
+          var cur = target * eased;
+          el.textContent = decimals > 0 ? cur.toFixed(decimals) : Math.round(cur).toLocaleString();
+          if (p < 1) {{ requestAnimationFrame(tick); }}
+          else {{ el.textContent = decimals > 0 ? target.toFixed(decimals) : Math.round(target).toLocaleString(); }}
+        }}
+        requestAnimationFrame(tick);
+      }});
+    </script>
+    """
+    components.html(html, height=height)
+
+
 # ════════════════════════════════════════════════════════
 # [merged from lib/tv_chart.py]
 # ════════════════════════════════════════════════════════
@@ -2063,7 +2122,7 @@ def main():
         <div class="hud-corner bl"></div><div class="hud-corner br"></div>
         <h1 style="font-size:1.9rem;margin:0;letter-spacing:0.03em;">
             <span style="color:#ffffff;">INSTITUTIONAL STOCK SCREENER</span>
-            <span style="font-size:0.85rem;color:var(--cyan);font-family:'Share Tech Mono',monospace;margin-left:8px;">v3.8</span>
+            <span style="font-size:0.85rem;color:var(--cyan);font-family:'Share Tech Mono',monospace;margin-left:8px;">v3.9</span>
         </h1>
         <p style="color:var(--text-dim);font-size:0.85rem;margin:6px 0 0 0;font-family:'Chakra Petch',sans-serif;letter-spacing:0.04em;">
             PRECISION MATH &nbsp;//&nbsp; MULTI-MARKET &nbsp;//&nbsp; HIDDEN GEM ENGINE &nbsp;//&nbsp; BACKTESTER
@@ -2276,16 +2335,17 @@ def main():
             at_support = len(df[df["Support"].str.contains("อยู่ที่แนวรับ", na=False)]) if "Support" in df else 0
             avg_rsi = df["RSI"].mean() if "RSI" in df else 0
 
-            cards_html = '<div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:16px;">'
-            cards_html += info_card("สแกน", str(total))
-            cards_html += info_card("Bull Trend", str(bulls), "#34f5a4")
-            cards_html += info_card("Strong Buy", str(strong), "#34f5a4")
-            cards_html += info_card("Breakout", str(breaks), "#ffd76a")
-            cards_html += info_card("Hidden Gem", str(gems), "#ffd84d")
-            cards_html += info_card("ที่แนวรับ", str(at_support), "#34f5a4")
-            cards_html += info_card("Avg RSI", f"{avg_rsi:.1f}", "#5ee6ff")
-            cards_html += '</div>'
-            st.markdown(cards_html, unsafe_allow_html=True)
+            cards = [
+                {"label": "สแกน", "value": total, "color": "#ffffff"},
+                {"label": "Bull Trend", "value": bulls, "color": "#34f5a4"},
+                {"label": "Strong Buy", "value": strong, "color": "#34f5a4"},
+                {"label": "Breakout", "value": breaks, "color": "#ffd76a"},
+                {"label": "Hidden Gem", "value": gems, "color": "#ffd84d"},
+                {"label": "ที่แนวรับ", "value": at_support, "color": "#34f5a4"},
+                {"label": "Avg RSI", "value": round(float(avg_rsi), 1) if pd.notna(avg_rsi) else 0,
+                 "color": "#5ee6ff", "decimals": 1},
+            ]
+            render_animated_metric_cards(cards)
 
             st.caption("⚠️ Signal / 💎 Gem / Accum เป็นการให้คะแนนตามเงื่อนไขเทคนิคัลที่ตั้งไว้เอง "
                       "(RSI, Volume, MACD, EMA) **ยังไม่ผ่านการพิสูจน์ทางสถิติว่าทำนายผลตอบแทนได้จริง** "
