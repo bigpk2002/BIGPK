@@ -610,10 +610,16 @@ def signal_age(closes: pd.Series) -> int:
     return -1
 
 
-def find_support_levels(df: pd.DataFrame, lookback: int = 180, swing_window: int = 5) -> list:
+def find_support_levels(df: pd.DataFrame, lookback: int = 180, swing_window: int = 5,
+                        min_bars: Optional[int] = None) -> list:
     """
     หาแนวรับจาก swing low ในอดีต พร้อมข้อมูลประกอบสำหรับให้คะแนนความแข็งแกร่ง
     (v3.7 — อัปเกรดจากเดิมที่คืนแค่ราคาเฉยๆ)
+
+    v3.8: เพิ่ม min_bars แยกจาก swing_window*2+30 เดิม (ค่า default ตั้งไว้
+    สำหรับแท่งรายวัน) เพราะตอนนี้ support_status() เรียกฟังก์ชันนี้ด้วยแท่ง
+    รายสัปดาห์ (~52 แท่ง/ปี) ถ้าใช้ threshold เดิม (30 แท่งบัฟเฟอร์) จะเข้มไป
+    สำหรับข้อมูลสัปดาห์ที่มีน้อยกว่ามาก
 
     สำหรับแต่ละแนวรับ เก็บข้อมูลเพิ่ม:
       - touch_count: ราคาเคยเข้ามาใกล้ระดับนี้ (ภายใน 1.5%) แล้ว "เด้งกลับขึ้น"
@@ -623,7 +629,9 @@ def find_support_levels(df: pd.DataFrame, lookback: int = 180, swing_window: int
 
     คืนค่า list ของ dict เรียงจากราคามากไปน้อย
     """
-    if df is None or len(df) < swing_window * 2 + 30:
+    if min_bars is None:
+        min_bars = swing_window * 2 + 30
+    if df is None or len(df) < min_bars:
         return []
     recent = df.iloc[-lookback:] if len(df) > lookback else df
     lows = recent["Low"].values
@@ -665,6 +673,32 @@ def find_support_levels(df: pd.DataFrame, lookback: int = 180, swing_window: int
     return sorted(results, key=lambda x: x["level"], reverse=True)
 
 
+def resample_weekly_ohlc(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    v3.8: รวมแท่งรายวันเป็นรายสัปดาห์ (Open/High/Low/Close/Volume) — ใช้เป็น
+    ฐานหาแนวรับแทนแท่งรายวัน ตามที่ขอ (ดูกราฟสัปดาห์เป็นหลักตอนบอกว่า "อยู่ที่
+    แนวรับ/ใกล้แนวรับ") เหตุผล: สวิงโลว์รายสัปดาห์ "หนักแน่น" กว่าสวิงโลว์
+    รายวันมาก — ราคาต้องหลุดจุดต่ำสุดของทั้งสัปดาห์ ไม่ใช่แค่ไส้เทียนวันเดียว
+    แนวรับที่เจอจากกราฟสัปดาห์เลยมักเป็นระดับที่ตลาดจริงๆให้ความสำคัญ ไม่ใช่
+    จุด noise รายวัน (ส่วน Signal/Trend/RSI หลักยังเป็นรายวันเหมือนเดิม —
+    เปลี่ยนเฉพาะการหาแนวรับเท่านั้น)
+
+    ตัดสัปดาห์ล่าสุดทิ้งถ้ายังไม่ปิดสัปดาห์จริง (เหมือน weekly_trend() — กัน
+    แนวรับ "ขยับ" ไปมาทุกวันจนกว่าสัปดาห์จะจบ)
+    """
+    try:
+        w = df.resample("W-FRI").agg({
+            "Open": "first", "High": "max", "Low": "min",
+            "Close": "last", "Volume": "sum",
+        }).dropna()
+        if len(w) and df.index[-1].dayofweek != 4:
+            w = w.iloc[:-1]
+        return w
+    except Exception as e:
+        log_err("resample_weekly_ohlc", e)
+        return pd.DataFrame()
+
+
 def support_status(price: float, df: pd.DataFrame, e50: float, e200: float) -> dict:
     """
     v3.7 — อัปเกรดใหญ่จากเวอร์ชันเดิม: เดิมเลือกแนวรับที่ใกล้ราคาที่สุดเสมอ
@@ -679,13 +713,19 @@ def support_status(price: float, df: pd.DataFrame, e50: float, e200: float) -> d
          จากคนละวิธีคำนวณ มาบรรจบที่จุดเดียวกัน = สัญญาณที่หนักแน่นกว่ามาก)
       4. ระยะห่างจากราคาปัจจุบัน — ต้องใกล้พอจะมีความหมายตอนนี้
 
+    v3.8: swing low หา "แนวรับ" (Swing Low) เปลี่ยนมาใช้แท่ง**รายสัปดาห์**
+    แทนรายวัน (ตามที่ขอ) — resample เป็นรายสัปดาห์ก่อนหาสวิงโลว์ ยังไม่ยิง
+    Yahoo เพิ่ม (resample จาก df รายวันที่มีอยู่แล้ว) EMA50/EMA200 ยังคงเป็น
+    รายวันเหมือนเดิม (เป็นคนละส่วนกับการหาสวิงโลว์)
+
     คืนค่า dict: {status, level, distance_pct, quality_score, touch_count,
                   volume_confirmed, confluence}
     """
     empty = {"status": "—", "level": np.nan, "distance_pct": np.nan,
              "quality_score": 0, "touch_count": 0, "volume_confirmed": False, "confluence": False}
 
-    swing_levels = find_support_levels(df)
+    weekly_df = resample_weekly_ohlc(df)
+    swing_levels = find_support_levels(weekly_df, lookback=52, swing_window=2, min_bars=14)
     candidates = []
     for sw in swing_levels:
         if sw["level"] <= price:
@@ -1786,11 +1826,11 @@ import streamlit as st
 
 @st.cache_data(ttl=3600)
 def sector_heatmap_data_live() -> pd.DataFrame:
-    """สรุปคะแนนเฉลี่ยต่อ Sector — คำนวณสดตอนกดปุ่ม (v3.7: เปลี่ยนมาเป็น
-    fallback สำรอง/ตัวเลือก rescan สดเท่านั้น เพราะปกติ Tab 5 จะโหลดจาก
-    load_prefetched_sector_heatmap() ที่คำนวณไว้ล่วงหน้าแล้วตั้งแต่ตอน
-    fetch_data.py รันหลังตลาดปิด — ยังใช้ข้อมูลจาก bundle ก่อนถ้ามี เรียก
-    analyze() สดเฉพาะตอนไม่มี bundle เท่านั้น (กันยิง Yahoo ซ้ำ)"""
+    """
+    v3.8: ไม่ได้ถูกเรียกจาก UI แล้ว (Tab 5 อ่านจาก
+    load_prefetched_sector_heatmap() เพียงทางเดียว ไม่มีปุ่มสแกนสดอีกต่อไป
+    ตามที่ขอ) เก็บฟังก์ชันนี้ไว้เผื่อรันทดสอบ/debug เองนอก UI เท่านั้น
+    """
     _, bundle_df = load_prefetched_bundle()
     use_bundle = bundle_df is not None and not bundle_df.empty and "Ticker" in bundle_df.columns
 
@@ -2023,7 +2063,7 @@ def main():
         <div class="hud-corner bl"></div><div class="hud-corner br"></div>
         <h1 style="font-size:1.9rem;margin:0;letter-spacing:0.03em;">
             <span style="color:#ffffff;">INSTITUTIONAL STOCK SCREENER</span>
-            <span style="font-size:0.85rem;color:var(--cyan);font-family:'Share Tech Mono',monospace;margin-left:8px;">v3.7</span>
+            <span style="font-size:0.85rem;color:var(--cyan);font-family:'Share Tech Mono',monospace;margin-left:8px;">v3.8</span>
         </h1>
         <p style="color:var(--text-dim);font-size:0.85rem;margin:6px 0 0 0;font-family:'Chakra Petch',sans-serif;letter-spacing:0.04em;">
             PRECISION MATH &nbsp;//&nbsp; MULTI-MARKET &nbsp;//&nbsp; HIDDEN GEM ENGINE &nbsp;//&nbsp; BACKTESTER
@@ -2434,8 +2474,12 @@ def main():
 
             gem_show = [c for c in ["Ticker", "Price", "ราคาปิด", "💎 Gem", "Gem Score",
                                     "EMA Pattern", "Squeeze", "Accum", "Accum Score",
+                                    "Support", "Support Dist%",
                                     "RSI", "Vol×20D", "RS 20D", "Signal", "MktCap$B"] if c in df.columns]
             dfg = df[gem_show].copy()
+            if "Support Dist%" in dfg.columns:
+                dfg["Support Dist%"] = dfg["Support Dist%"].apply(
+                    lambda x: f"+{x:.1f}%" if pd.notna(x) else "—")
 
             gm = pd.Series(True, index=dfg.index)
             if gem_f: gm &= df["💎 Gem"].isin(gem_f)
@@ -2448,7 +2492,8 @@ def main():
                 dfg = dfg.sort_values("Gem Score", ascending=False)
 
             gsmap = {"💎 Gem": _sty_gem, "Accum": _sty_signal, "EMA Pattern": _sty_signal,
-                     "Gem Score": _sty_gs, "Signal": _sty_signal, "RSI": _sty_rsi, "Squeeze": _sty_squeeze}
+                     "Gem Score": _sty_gs, "Signal": _sty_signal, "RSI": _sty_rsi,
+                     "Squeeze": _sty_squeeze, "Support": _sty_support}
             st.markdown(f"**{len(dfg)} หุ้น**")
             st.dataframe(make_table(dfg, gsmap), use_container_width=True, height=540)
 
@@ -2783,39 +2828,30 @@ def main():
         st.markdown("### 🗺️ Sector Heatmap — Money Flow")
         st.caption("สแกน 5 หุ้นตัวแทนต่อ Sector เพื่อวัด momentum และ accumulation")
 
-        # v3.7: โหลดข้อมูลที่คำนวณไว้ล่วงหน้าแล้วอัตโนมัติ (พร้อมกับข้อมูลหลัก
-        # หลังตลาดปิด) ไม่ต้องรอกดปุ่มเหมือนเดิมอีกต่อไป
+        # v3.8: ตัดปุ่ม "สแกนสด/Live Rescan" ออกตามที่ขอ — ข้อมูลมาจากรอบ
+        # prefetch อัตโนมัติหลังตลาดปิดเพียงทางเดียวเท่านั้น (เหมือนข้อมูลหุ้น
+        # หลักในแท็บอื่นๆ) ไม่มีการยิง Yahoo สดจาก tab นี้อีกต่อไป
         if "sec_df" not in st.session_state:
             gen_at, pre_sec_df = load_prefetched_sector_heatmap()
-            if pre_sec_df is not None and not pre_sec_df.empty:
-                st.session_state["sec_df"] = pre_sec_df
-                st.session_state["sec_df_gen_at"] = gen_at
+            st.session_state["sec_df"] = pre_sec_df
+            st.session_state["sec_df_gen_at"] = gen_at
 
-        if st.session_state.get("sec_df_gen_at"):
-            st.caption(f"🕒 ข้อมูลนี้อัปเดตพร้อมกับสแกนหลักหลังตลาดปิดล่าสุด — "
-                      f"{st.session_state['sec_df_gen_at']}")
-        elif "sec_df" not in st.session_state or st.session_state["sec_df"].empty:
-            st.info("ยังไม่มี Sector Heatmap ที่ดึงไว้ล่วงหน้า (อาจเป็นก่อน GitHub Action "
-                   "รันรอบแรก) — กดปุ่มด้านล่างเพื่อสแกนสดแทนชั่วคราว")
+        sec_df = st.session_state.get("sec_df", pd.DataFrame())
+        gen_at = st.session_state.get("sec_df_gen_at")
 
-        run_sec = st.button("🔄 สแกนสดใหม่ (ไม่ใช้ข้อมูลที่ดึงไว้ล่วงหน้า) | Live Rescan",
-                            key="sec_btn")
-        if run_sec:
-            with st.spinner("กำลังสแกน 11 Sectors…"):
-                st.session_state["sec_df"] = sector_heatmap_data_live()
-                st.session_state["sec_df_gen_at"] = None
+        if gen_at:
+            st.caption(f"🕒 อัปเดตพร้อมกับสแกนหลักหลังตลาดปิดล่าสุด — {gen_at}")
 
-        if "sec_df" in st.session_state and not st.session_state["sec_df"].empty:
-            sec_df = st.session_state["sec_df"]
-
+        if sec_df is not None and not sec_df.empty:
+            # v3.8: ลดคอลัมน์ที่แสดงตามที่ขอ — เหลือแค่ Gem Score / Accum / Bull %
+            # (ตัด RS 20D และรายชื่อหุ้นตัวอย่างออกจากมุมมองหลัก เพราะไม่ใช่
+            # ตัวเลขหลักที่ใช้ตัดสินใจว่า sector ไหน "สะสม" อยู่)
             st.markdown("**📊 Gem Score ต่อ Sector (ยิ่งสูง = สัญญาณสะสมมากกว่า)**")
             mx_gem = sec_df["Avg Gem Score"].max() or 1
             for _, row in sec_df.iterrows():
-                g_val = row["Avg Gem Score"]; a_val = row["Avg Accum"]
-                rs_val = row["Avg RS 20D"]; bl_val = row["Bull %"]
+                g_val = row["Avg Gem Score"]; a_val = row["Avg Accum"]; bl_val = row["Bull %"]
                 g_pct = g_val / mx_gem * 100 if mx_gem > 0 else 0
                 g_col = "#ffd84d" if g_val >= 7 else "#34f5a4" if g_val >= 5 else "#2de2e6" if g_val >= 3 else "#5b7299"
-                rs_col = "#34f5a4" if rs_val > 0 else "#ff3864"
                 st.markdown(
                     f'<div style="background:#0e1626;border:1px solid #16213a;border-radius:8px;'
                     f'padding:10px 14px;margin:4px 0;display:flex;align-items:center;gap:12px;flex-wrap:wrap;">'
@@ -2824,20 +2860,19 @@ def main():
                     f'<div style="background:{g_col};height:14px;width:{g_pct:.0f}%;border-radius:3px;min-width:3px;"></div></div>'
                     f'<div style="color:{g_col};font-weight:700;width:50px;font-size:0.85rem;">{g_val:.1f}</div>'
                     f'<div style="color:#5b7299;font-size:0.78rem;">Accum:<b style="color:#2de2e6;"> {a_val:.1f}</b></div>'
-                    f'<div style="color:#5b7299;font-size:0.78rem;">RS:<b style="color:{rs_col};"> {rs_val:+.1f}%</b></div>'
                     f'<div style="color:#5b7299;font-size:0.78rem;">Bull:<b style="color:#34f5a4;"> {bl_val:.0f}%</b></div>'
-                    f'<div style="color:#44587f;font-size:0.7rem;">{row["Sample"]}</div>'
                     f'</div>', unsafe_allow_html=True)
 
             st.markdown("---")
-            st.dataframe(make_table(sec_df.drop(columns=["Sample"], errors="ignore")),
+            st.dataframe(make_table(sec_df[["Sector", "Avg Gem Score", "Avg Accum", "Bull %"]]),
                          use_container_width=True)
         else:
             st.markdown("""
             <div style="text-align:center;padding:60px;color:#5b7299;">
                 <div style="font-size:2.5rem;">🗺️</div>
-                <h3 style="color:#93a8c9;">กด "สแกน Sector Map" เพื่อดู Money Flow</h3>
-                <p>ใช้เวลาประมาณ 30-60 วินาที</p>
+                <h3 style="color:#93a8c9;">ยังไม่มี Sector Heatmap</h3>
+                <p>ข้อมูลจะโผล่ขึ้นอัตโนมัติหลัง GitHub Action รันรอบแรก (ทุกวันหลังตลาดปิด) —
+                ไม่ต้องกดอะไรเพิ่ม</p>
             </div>""", unsafe_allow_html=True)
 
     # ════════════════════════════════════════════════════════
