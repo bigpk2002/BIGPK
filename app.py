@@ -757,6 +757,45 @@ def quiet_accumulation(volumes: pd.Series, closes: pd.Series, rsi: float, n: int
     return score, lbl
 
 
+def weekly_trend(df: pd.DataFrame) -> tuple:
+    """
+    v3.7: เทรนด์รายสัปดาห์ — เพิ่มเป็น "ตัวกรองเสริม" คู่กับ Signal รายวันเดิม
+    ไม่ได้เปลี่ยนทั้งระบบไปเป็นรายสัปดาห์ เพราะ threshold เดิมทั้งหมด (RSI,
+    MACD, Volume ฯลฯ ใน strategy_signal/quiet_accumulation) tune ไว้บน
+    พฤติกรรมแท่งรายวันโดยเฉพาะ เปลี่ยนทั้งระบบจะทำให้ signal เดิมเพี้ยนหมด
+
+    ใช้ resample() จากข้อมูลรายวันที่ analyze() ดึงมาอยู่แล้ว — ไม่ยิง Yahoo
+    เพิ่มอีก request ต่อ ticker
+
+    ใช้ EMA10/EMA20 ของแท่งสัปดาห์ (ไม่ใช่ EMA200) เพราะข้อมูลที่มีอยู่คือ
+    period="1y" รายวัน (~52 แท่งสัปดาห์) ไม่พอคำนวณ EMA200 สัปดาห์ให้แม่นยำ
+    ถ้าจะทำ EMA200 สัปดาห์จริงต้องดึงย้อนหลัง 4-5 ปี ซึ่งเพิ่มภาระ/เวลาการ
+    ดึงข้อมูลทั้งระบบไปอีกมาก จึงยังไม่ทำในเวอร์ชันนี้
+
+    กัน repainting: ถ้าแท่งรายวันล่าสุดยังไม่ใช่วันศุกร์ (ตลาดปิดสัปดาห์)
+    ตัดแท่งสัปดาห์ล่าสุด (ที่ยังไม่ปิดจริง) ทิ้งก่อนคำนวณ ไม่งั้นตัวเลขของ
+    "สัปดาห์นี้" จะขยับไปมาทุกวันจนกว่าสัปดาห์จะจบ
+    """
+    try:
+        w = df["Close"].resample("W-FRI").last().dropna()
+        if len(w) and df.index[-1].dayofweek != 4:
+            w = w.iloc[:-1]
+        if len(w) < 21:
+            return "—", np.nan
+        e10w = ema(w, 10).iloc[-1]
+        e20w = ema(w, 20).iloc[-1]
+        pw = w.iloc[-1]
+        chg = round((pw - e20w) / e20w * 100, 2) if e20w > 0 else np.nan
+        if pw > e10w > e20w:
+            return "🟢 Weekly Bull", chg
+        if pw < e10w < e20w:
+            return "🔴 Weekly Bear", chg
+        return "🟡 Weekly Mixed", chg
+    except Exception as e:
+        log_err("weekly_trend", e)
+        return "—", np.nan
+
+
 def relative_strength(closes: pd.Series, bench: pd.Series, period: int = 20) -> float:
     """
     เทียบ % การเปลี่ยนแปลงของหุ้นกับ benchmark (เช่น SPY) ใน N แท่งล่าสุด
@@ -1005,6 +1044,7 @@ def analyze(ticker: str, period: str = "1y", interval: str = "1d", bench_tuple=N
         sq_lbl, bw_now, bw_delta = squeeze_direction(cl)
         age = signal_age(cl)
         sup = support_status(px, df, ep[50], ep[200])
+        wk_trend, wk_chg = weekly_trend(df)
 
         rs20 = rs50 = np.nan
         if bench_tuple:
@@ -1033,6 +1073,7 @@ def analyze(ticker: str, period: str = "1y", interval: str = "1d", bench_tuple=N
             "Support": sup["status"], "Support Level": sup["level"], "Support Dist%": sup["distance_pct"],
             "Support Quality": sup["quality_score"], "Support Touches": sup["touch_count"],
             "Support Vol Confirmed": sup["volume_confirmed"], "Support Confluence": sup["confluence"],
+            "Weekly Trend": wk_trend, "Weekly vs EMA20w%": wk_chg,
             "RS 20D": rs20, "RS 50D": rs50,
             "P/E": fnd["pe"], "P/BV": fnd["pb"], "Div%": fnd["div"], "MktCap$B": fnd["mktcap_b"],
         }
@@ -1566,6 +1607,14 @@ def _sty_signal(v):
     return "color:#e8f0ff;"
 
 
+def _sty_weekly(v):
+    v = str(v)
+    if "Weekly Bull" in v: return "color:#34f5a4;font-weight:700;"
+    if "Weekly Bear" in v: return "color:#ff3864;font-weight:700;"
+    if "Weekly Mixed" in v: return "color:#ffc857;font-weight:600;"
+    return "color:#e8f0ff;"
+
+
 def _sty_rsi(v):
     try:
         f = float(v)
@@ -1736,10 +1785,12 @@ import streamlit as st
 
 
 @st.cache_data(ttl=3600)
-def sector_heatmap_data() -> pd.DataFrame:
-    """สรุปคะแนนเฉลี่ยต่อ Sector — ใหม่ v3.2: ใช้ข้อมูลจาก bundle ที่ดึงไว้
-    ล่วงหน้าก่อน (เพราะ SECTOR_MAP tickers ถูกรวมอยู่ใน fetch_data.py แล้ว)
-    เรียก analyze() สดเฉพาะตอนไม่มี bundle เท่านั้น (กันยิง Yahoo ซ้ำ)"""
+def sector_heatmap_data_live() -> pd.DataFrame:
+    """สรุปคะแนนเฉลี่ยต่อ Sector — คำนวณสดตอนกดปุ่ม (v3.7: เปลี่ยนมาเป็น
+    fallback สำรอง/ตัวเลือก rescan สดเท่านั้น เพราะปกติ Tab 5 จะโหลดจาก
+    load_prefetched_sector_heatmap() ที่คำนวณไว้ล่วงหน้าแล้วตั้งแต่ตอน
+    fetch_data.py รันหลังตลาดปิด — ยังใช้ข้อมูลจาก bundle ก่อนถ้ามี เรียก
+    analyze() สดเฉพาะตอนไม่มี bundle เท่านั้น (กันยิง Yahoo ซ้ำ)"""
     _, bundle_df = load_prefetched_bundle()
     use_bundle = bundle_df is not None and not bundle_df.empty and "Ticker" in bundle_df.columns
 
@@ -1848,12 +1899,16 @@ GITHUB_REPO = "bigpk2002/BANNVICH01"
 RELEASE_TAG = "latest-data"
 PREFETCH_URL = f"https://github.com/{GITHUB_REPO}/releases/download/{RELEASE_TAG}/latest_scan.json"
 ALERTS_URL = f"https://github.com/{GITHUB_REPO}/releases/download/{RELEASE_TAG}/alerts.json"
+# v3.7: Sector Heatmap คำนวณไว้ล่วงหน้าตอน fetch_data.py รันแล้ว (ต่อจาก df
+# ที่สแกนเสร็จอยู่แล้วในตัว ไม่ยิง Yahoo เพิ่ม) แอปแค่อ่านไฟล์นี้ตรงๆ
+SECTOR_HEATMAP_URL = f"https://github.com/{GITHUB_REPO}/releases/download/{RELEASE_TAG}/sector_heatmap.json"
 
 # ไฟล์ local ใช้เป็น fallback เฉพาะตอนรันทดสอบในเครื่องเอง (python fetch_data.py
 # ตรงๆ โดยไม่ผ่าน GitHub Action) — ตอน deploy จริงบน Streamlit Cloud จะไม่มี
 # ไฟล์นี้อยู่ในเครื่อง (เพราะไม่ได้ commit เข้า git แล้ว) จะใช้ทาง Release เสมอ
 PREFETCH_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "latest_scan.json")
 ALERTS_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "alerts.json")
+SECTOR_HEATMAP_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "sector_heatmap.json")
 
 
 @st.cache_data(ttl=300)
@@ -1908,6 +1963,32 @@ def load_prefetch_alerts():
     return []
 
 
+@st.cache_data(ttl=300)
+def load_prefetched_sector_heatmap():
+    """
+    v3.7: โหลด Sector Heatmap ที่ fetch_data.py คำนวณไว้ล่วงหน้าแล้วตอนดึง
+    ข้อมูลหลักหลังตลาดปิด (ต่อจาก df ที่สแกนเสร็จอยู่แล้วในตัว ไม่ยิง Yahoo
+    เพิ่ม) แทนที่จะต้องรอให้คนกดปุ่มคำนวณสดทุกครั้งที่เปิดแอป — คืนค่า
+    (generated_at: str|None, DataFrame) เหมือน load_prefetched_bundle()
+    """
+    if os.path.exists(SECTOR_HEATMAP_PATH):
+        try:
+            with open(SECTOR_HEATMAP_PATH, "r", encoding="utf-8") as f:
+                payload = json.load(f)
+            return payload.get("generated_at"), pd.DataFrame(payload.get("data", []))
+        except Exception as e:
+            log_err("load_prefetched_sector_heatmap(local)", e)
+    try:
+        import requests
+        resp = requests.get(SECTOR_HEATMAP_URL, timeout=15)
+        if resp.ok:
+            payload = resp.json()
+            return payload.get("generated_at"), pd.DataFrame(payload.get("data", []))
+    except Exception as e:
+        log_err("load_prefetched_sector_heatmap(release)", e)
+    return None, pd.DataFrame()
+
+
 def get_with_bundle_fallback(tickers: list, bundle_df: pd.DataFrame, max_live_fallback: int = 15) -> pd.DataFrame:
     """ดึงข้อมูลของ tickers ที่ต้องการจาก bundle ที่ดึงไว้ล่วงหน้าก่อน ถ้ามีบาง
     ticker ไม่อยู่ใน bundle (เช่น พิมพ์ ticker แปลกๆใน Custom) ค่อย live fallback
@@ -1942,7 +2023,7 @@ def main():
         <div class="hud-corner bl"></div><div class="hud-corner br"></div>
         <h1 style="font-size:1.9rem;margin:0;letter-spacing:0.03em;">
             <span style="color:#ffffff;">INSTITUTIONAL STOCK SCREENER</span>
-            <span style="font-size:0.85rem;color:var(--cyan);font-family:'Share Tech Mono',monospace;margin-left:8px;">v3.6</span>
+            <span style="font-size:0.85rem;color:var(--cyan);font-family:'Share Tech Mono',monospace;margin-left:8px;">v3.7</span>
         </h1>
         <p style="color:var(--text-dim);font-size:0.85rem;margin:6px 0 0 0;font-family:'Chakra Petch',sans-serif;letter-spacing:0.04em;">
             PRECISION MATH &nbsp;//&nbsp; MULTI-MARKET &nbsp;//&nbsp; HIDDEN GEM ENGINE &nbsp;//&nbsp; BACKTESTER
@@ -2209,6 +2290,9 @@ def main():
             with fc2:
                 trend_filter = st.multiselect("Trend | แนวโน้ม", ["🟢 Bull", "🔴 Bear"],
                                               default=[], key="d_tr", placeholder="ทั้งหมด")
+                wk_filter = st.multiselect("Weekly Trend | แนวโน้มรายสัปดาห์ (ตัวกรองเสริม)",
+                                           ["🟢 Weekly Bull", "🔴 Weekly Bear", "🟡 Weekly Mixed"],
+                                           default=[], key="d_wk", placeholder="ทั้งหมด")
             with fc3:
                 sq_filter = st.multiselect("Squeeze | การหดตัว", df["Squeeze"].unique().tolist() if "Squeeze" in df else [],
                                            default=[], key="d_sq", placeholder="ทั้งหมด")
@@ -2217,7 +2301,7 @@ def main():
                                             ["🟢 อยู่ที่แนวรับ", "🟡 ใกล้แนวรับ"],
                                             default=[], key="d_sup", placeholder="ทั้งหมด")
 
-            show_cols = [c for c in ["Ticker", "Price", "ราคาปิด", "Trend", "RSI", "EMA Pattern",
+            show_cols = [c for c in ["Ticker", "Price", "ราคาปิด", "Trend", "Weekly Trend", "RSI", "EMA Pattern",
                                      "Squeeze", "Support", "Support Level", "Support Dist%",
                                      "Support Quality", "Support Touches",
                                      "Signal Age", "💎 Gem", "Accum", "RS 20D", "Signal",
@@ -2243,6 +2327,8 @@ def main():
             mask = pd.Series(True, index=dfv.index)
             if sig_filter: mask &= df["Signal"].isin(sig_filter)
             if trend_filter: mask &= df["Trend"].apply(lambda x: any(t in str(x) for t in trend_filter))
+            if wk_filter and "Weekly Trend" in df.columns:
+                mask &= df["Weekly Trend"].isin(wk_filter)
             if sq_filter: mask &= df["Squeeze"].isin(sq_filter)
             if sup_filter and "Support" in df.columns: mask &= df["Support"].isin(sup_filter)
             if min_gem > 0 and "Gem Score" in df.columns: mask &= df["Gem Score"] >= min_gem
@@ -2259,7 +2345,7 @@ def main():
 
             smap = {"Signal": _sty_signal, "💎 Gem": _sty_gem, "RSI": _sty_rsi,
                     "Squeeze": _sty_squeeze, "Support": _sty_support, "RS 20D": _sty_rs,
-                    "Accum": _sty_signal, "EMA Pattern": _sty_signal}
+                    "Accum": _sty_signal, "EMA Pattern": _sty_signal, "Weekly Trend": _sty_weekly}
             st.markdown(f"**{len(dfv)} หุ้นที่ตรงเงื่อนไข**")
             st.dataframe(make_table(dfv, smap), use_container_width=True, height=520)
 
@@ -2697,11 +2783,27 @@ def main():
         st.markdown("### 🗺️ Sector Heatmap — Money Flow")
         st.caption("สแกน 5 หุ้นตัวแทนต่อ Sector เพื่อวัด momentum และ accumulation")
 
-        run_sec = st.button("🔍 สแกน Sector Map | Scan Sectors", key="sec_btn")
+        # v3.7: โหลดข้อมูลที่คำนวณไว้ล่วงหน้าแล้วอัตโนมัติ (พร้อมกับข้อมูลหลัก
+        # หลังตลาดปิด) ไม่ต้องรอกดปุ่มเหมือนเดิมอีกต่อไป
+        if "sec_df" not in st.session_state:
+            gen_at, pre_sec_df = load_prefetched_sector_heatmap()
+            if pre_sec_df is not None and not pre_sec_df.empty:
+                st.session_state["sec_df"] = pre_sec_df
+                st.session_state["sec_df_gen_at"] = gen_at
+
+        if st.session_state.get("sec_df_gen_at"):
+            st.caption(f"🕒 ข้อมูลนี้อัปเดตพร้อมกับสแกนหลักหลังตลาดปิดล่าสุด — "
+                      f"{st.session_state['sec_df_gen_at']}")
+        elif "sec_df" not in st.session_state or st.session_state["sec_df"].empty:
+            st.info("ยังไม่มี Sector Heatmap ที่ดึงไว้ล่วงหน้า (อาจเป็นก่อน GitHub Action "
+                   "รันรอบแรก) — กดปุ่มด้านล่างเพื่อสแกนสดแทนชั่วคราว")
+
+        run_sec = st.button("🔄 สแกนสดใหม่ (ไม่ใช้ข้อมูลที่ดึงไว้ล่วงหน้า) | Live Rescan",
+                            key="sec_btn")
         if run_sec:
             with st.spinner("กำลังสแกน 11 Sectors…"):
-                sec_df = sector_heatmap_data()
-                st.session_state["sec_df"] = sec_df
+                st.session_state["sec_df"] = sector_heatmap_data_live()
+                st.session_state["sec_df_gen_at"] = None
 
         if "sec_df" in st.session_state and not st.session_state["sec_df"].empty:
             sec_df = st.session_state["sec_df"]
@@ -2782,7 +2884,7 @@ def main():
 
             if "wl_df" in st.session_state and not st.session_state["wl_df"].empty:
                 wdf = st.session_state["wl_df"]
-                wl_show = [c for c in ["Ticker", "Price", "Trend", "RSI", "EMA Pattern", "Squeeze",
+                wl_show = [c for c in ["Ticker", "Price", "Trend", "Weekly Trend", "RSI", "EMA Pattern", "Squeeze",
                                        "Signal Age", "💎 Gem", "Accum", "RS 20D", "Signal", "Signal Reason",
                                        "YTD%", "Drawdown%"]
                            if c in wdf.columns]
@@ -2794,7 +2896,8 @@ def main():
                     wdf = wdf.rename(columns={"Signal Reason": "เหตุผล"})
                     wl_show = [("เหตุผล" if c == "Signal Reason" else c) for c in wl_show]
                 wsmap = {"Signal": _sty_signal, "💎 Gem": _sty_gem, "RSI": _sty_rsi,
-                         "Squeeze": _sty_squeeze, "RS 20D": _sty_rs, "Accum": _sty_signal}
+                         "Squeeze": _sty_squeeze, "RS 20D": _sty_rs, "Accum": _sty_signal,
+                         "Weekly Trend": _sty_weekly}
                 st.dataframe(make_table(wdf[wl_show], wsmap),
                              use_container_width=True, height=400)
 
