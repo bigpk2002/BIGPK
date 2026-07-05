@@ -2122,7 +2122,7 @@ def main():
         <div class="hud-corner bl"></div><div class="hud-corner br"></div>
         <h1 style="font-size:1.9rem;margin:0;letter-spacing:0.03em;">
             <span style="color:#ffffff;">INSTITUTIONAL STOCK SCREENER</span>
-            <span style="font-size:0.85rem;color:var(--cyan);font-family:'Share Tech Mono',monospace;margin-left:8px;">v3.9</span>
+            <span style="font-size:0.85rem;color:var(--cyan);font-family:'Share Tech Mono',monospace;margin-left:8px;">v3.9.1</span>
         </h1>
         <p style="color:var(--text-dim);font-size:0.85rem;margin:6px 0 0 0;font-family:'Chakra Petch',sans-serif;letter-spacing:0.04em;">
             PRECISION MATH &nbsp;//&nbsp; MULTI-MARKET &nbsp;//&nbsp; HIDDEN GEM ENGINE &nbsp;//&nbsp; BACKTESTER
@@ -2443,9 +2443,12 @@ def main():
                 dfv["_p"] = dfv["Signal"].map(prio).fillna(7)
                 dfv = dfv.sort_values("_p").drop(columns=["_p"])
 
-            smap = {"Signal": _sty_signal, "💎 Gem": _sty_gem, "RSI": _sty_rsi,
-                    "Squeeze": _sty_squeeze, "Support": _sty_support, "RS 20D": _sty_rs,
-                    "Accum": _sty_signal, "EMA Pattern": _sty_signal, "Weekly Trend": _sty_weekly}
+            # v3.9: ลดคอลัมน์ที่ style จาก 9 เหลือ 4 (Signal/Support/Weekly Trend/Gem)
+            # — pandas Styler.map() วนลูป Python ทีละ cell ต่อคอลัมน์ ยิ่ง style
+            # เยอะยิ่งช้าเมื่อมีหลายร้อยแถว ตัดคอลัมน์ที่ไม่ใช่ตัวชี้วัดหลักออก
+            # (RSI/Squeeze/RS 20D/Accum/EMA Pattern ยังโชว์ค่าปกติ แค่ไม่มีสี)
+            smap = {"Signal": _sty_signal, "💎 Gem": _sty_gem,
+                    "Support": _sty_support, "Weekly Trend": _sty_weekly}
             st.markdown(f"**{len(dfv)} หุ้นที่ตรงเงื่อนไข**")
             st.dataframe(make_table(dfv, smap), use_container_width=True, height=520)
 
@@ -2551,9 +2554,9 @@ def main():
             if "Gem Score" in dfg.columns:
                 dfg = dfg.sort_values("Gem Score", ascending=False)
 
-            gsmap = {"💎 Gem": _sty_gem, "Accum": _sty_signal, "EMA Pattern": _sty_signal,
-                     "Gem Score": _sty_gs, "Signal": _sty_signal, "RSI": _sty_rsi,
-                     "Squeeze": _sty_squeeze, "Support": _sty_support}
+            # v3.9: ลดคอลัมน์ที่ style เหมือนกับ Dashboard (เหตุผลเดียวกัน)
+            gsmap = {"💎 Gem": _sty_gem, "Gem Score": _sty_gs,
+                     "Signal": _sty_signal, "Support": _sty_support}
             st.markdown(f"**{len(dfg)} หุ้น**")
             st.dataframe(make_table(dfg, gsmap), use_container_width=True, height=540)
 
