@@ -31,9 +31,6 @@ jobs:
         run: pip install -r requirements.txt
 
       - name: รัน fetch_data.py
-        env:
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: python fetch_data.py
 
       # v3.6: commit ไฟล์ timestamp เล็กๆ เข้า repo เพื่อ keep-alive
@@ -85,7 +82,6 @@ jobs:
               --notes "ไม่ใช่ release โค้ดจริง ใช้เก็บไฟล์ข้อมูลที่ดึงอัตโนมัติทุกวันเท่านั้น"
           fi
           FILES="data/latest_scan.json"
-          [ -f data/alerts.json ] && FILES="$FILES data/alerts.json"
           [ -f data/sector_heatmap.json ] && FILES="$FILES data/sector_heatmap.json"
           gh release upload latest-data $FILES --clobber
 
