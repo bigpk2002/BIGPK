@@ -269,6 +269,52 @@ def save_watchlist(items: list) -> None:
 
 
 # ─────────────────────────────────────────────────────────────
+# DECISION LOG PERSISTENCE (ใหม่ v3.18)
+# ─────────────────────────────────────────────────────────────
+# บันทึกการตัดสินใจของผู้ใช้เอง (ซื้อ/ไม่ซื้อ/ขาย) + ผลลัพธ์ทีหลัง (กำไร/
+# ขาดทุน) — เก็บ local เหมือน watchlist (จำกัดเหมือนกัน: อยู่แค่บนเครื่องที่
+# รัน Streamlit ไม่ sync ข้าม session/เครื่อง) เป้าหมายคือให้ผู้ใช้เห็นว่า
+# "ตัวเองตัดสินใจแม่นแค่ไหน" ไม่ใช่แค่ระบบแม่นไหม เพราะสองอย่างนี้คนละเรื่อง
+DECISION_LOG_PATH = os.path.join(CACHE_DIR, "decision_log.json")
+
+
+def load_decision_log() -> list:
+    if not os.path.exists(DECISION_LOG_PATH):
+        return []
+    try:
+        with open(DECISION_LOG_PATH, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception as e:
+        log_err("load_decision_log", e)
+        return []
+
+
+def save_decision_log(items: list) -> None:
+    try:
+        with open(DECISION_LOG_PATH, "w", encoding="utf-8") as f:
+            json.dump(items, f, ensure_ascii=False)
+    except Exception as e:
+        log_err("save_decision_log", e)
+
+
+def check_losing_streak(log: list, threshold: int = 3) -> int:
+    """
+    v3.18: นับจำนวนไม้ที่ "ขาดทุน" ติดกันล่าสุด (เรียงจากรายการล่าสุดย้อนไป)
+    หยุดนับทันทีที่เจอไม้ที่ยังไม่มีผลลัพธ์ (outcome=None) หรือกำไร — ใช้เตือน
+    ให้พักคิดก่อนเข้าไม้ถัดไป (กัน revenge trading) คืนค่าจำนวนไม้ที่ขาดทุนติดกัน
+    """
+    streak = 0
+    for entry in reversed(log):
+        outcome = entry.get("outcome")
+        if outcome == "loss":
+            streak += 1
+        elif outcome == "win":
+            break
+        # outcome None (ยังไม่ปิดไม้) ข้ามไปเรื่อยๆ ไม่นับ ไม่ตัด streak
+    return streak
+
+
+# ─────────────────────────────────────────────────────────────
 # LAST-SIGNAL SNAPSHOT — สำหรับแจ้งเตือน "สัญญาณใหม่ตั้งแต่สแกนล่าสุด" (ใหม่ v3.0)
 # ─────────────────────────────────────────────────────────────
 def _signals_path(universe: str) -> str:
@@ -477,11 +523,58 @@ SECTOR_MAP = {
     "🏠 REIT | กองทุนอสังหา":         ["O","PLD","AMT","EQIX","PSA","DLR","SPG","AVB","EQR","WELL","VTR","ARE","BXP","KIM","REG","IIPR"],
 }
 
+# v3.17: ย้าย GITHUB_REPO/RELEASE_TAG มาประกาศตรงนี้ (เดิมอยู่ถัดจาก
+# UNIVERSE_OPTIONS มาก) เพราะ UNIVERSE_OPTIONS ตอนนี้ต้องใช้ฟังก์ชันที่พึ่งพา
+# ค่านี้ (fetch_micro_cap_top100/fetch_small_cap_top100) — ต้อง define ก่อน
+# ใช้งานจริงเสมอสำหรับ dict literal (ต่างจากในฟังก์ชันที่ resolve ตอนเรียกใช้)
+#
+# ⚠️ เปลี่ยนค่านี้ถ้า fork/เปลี่ยนชื่อ repo:
+GITHUB_REPO = "bigpk2002/BANNVICH01"
+RELEASE_TAG = "latest-data"
+
+# v3.17: Micro/Small Cap Top 100 — คัดจาก fetch_data.py ทุกวัน (ต่อจาก df ที่
+# สแกนเสร็จอยู่แล้ว ไม่ยิง Yahoo เพิ่ม) เรียงตาม Fundamental Score สูงสุดใน
+# ช่วง Market Cap ที่กำหนด แทนที่ "Russell 2000 Small Cap"/"US Broad Market"
+# เดิมที่เป็นแค่รายชื่อคงที่ไม่ได้คัดกรองอะไร — สองยูนิเวิร์สเดิมยังใช้เป็น
+# candidate pool ภายในอยู่ (ดู fetch_data.py) แค่ไม่โชว์เป็นตัวเลือกตรงๆแล้ว
+CURATED_UNIVERSES_URL = f"https://github.com/{GITHUB_REPO}/releases/download/{RELEASE_TAG}/curated_universes.json"
+CURATED_UNIVERSES_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "curated_universes.json")
+
+
+@st.cache_data(ttl=300)
+def load_curated_universes() -> dict:
+    """โหลดรายชื่อ Micro/Small Cap Top 100 ที่ fetch_data.py คัดไว้ล่วงหน้า
+    แล้วเมื่อคืน — คืน dict ว่างถ้ายังไม่มี (เช่น ก่อน GitHub Action รันรอบแรก
+    หลังอัปเดตฟีเจอร์นี้) โครงสร้างเหมือน load_prefetched_bundle() อื่นๆ"""
+    if os.path.exists(CURATED_UNIVERSES_PATH):
+        try:
+            with open(CURATED_UNIVERSES_PATH, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception as e:
+            log_err("load_curated_universes(local)", e)
+    try:
+        import requests
+        resp = requests.get(CURATED_UNIVERSES_URL, timeout=15)
+        if resp.ok:
+            return resp.json()
+    except Exception as e:
+        log_err("load_curated_universes(release)", e)
+    return {}
+
+
+def fetch_micro_cap_top100() -> list:
+    return load_curated_universes().get("micro_cap_top100", [])
+
+
+def fetch_small_cap_top100() -> list:
+    return load_curated_universes().get("small_cap_top100", [])
+
+
 UNIVERSE_OPTIONS = {
     "S&P 500 (503)": fetch_sp500,
     "Nasdaq 100 (101)": fetch_nasdaq100,
-    "Russell 2000 Small Cap": fetch_russell2000,
-    "US Broad Market (~700)": fetch_broad_us,
+    "Micro Cap Value (<$700M) — Top 100": fetch_micro_cap_top100,
+    "Small Cap Value (<$2B) — Top 100": fetch_small_cap_top100,
     "หุ้นไทย SET/mai": fetch_set,
     "ETF Screener (70)": fetch_etfs,
     "Sector Focus | เลือกตามหมวด": None,
@@ -1133,21 +1226,155 @@ def _safe_num(val, decimals=2):
 
 @st.cache_data(ttl=21600)  # 6 ชม. — fundamentals เปลี่ยนช้ากว่าราคามาก ไม่ต้องดึงซ้ำทุกสแกน
 def _cached_fundamentals(ticker: str) -> dict:
+    """
+    v3.17: เพิ่ม field growth/profitability/มุมมองนักวิเคราะห์ (revenueGrowth,
+    earningsGrowth, profitMargins, returnOnEquity, debtToEquity,
+    recommendationKey, targetMeanPrice) สำหรับใช้คำนวณ fundamental_score()
+    — ทุก field มาจาก .info response เดียวกับที่ดึงอยู่แล้ว (_download_info)
+    ไม่ได้ยิง Yahoo เพิ่มอีก request เลย แค่ดึงข้อมูลที่มากับ response เดิม
+    ให้ครบขึ้น
+
+    ⚠️ หุ้นเล็ก/ไมโครแคปจำนวนมากไม่มี field พวกนี้ครบ (ไม่มี analyst coverage)
+    — ถ้าหาย จะเป็น NaN/None เฉยๆ ไม่ใช่ error ผู้เรียกต้องเช็ค NaN เอง
+    """
     try:
         info = _download_info(ticker)
         pe = info.get("trailingPE") or info.get("forwardPE")
         pb = info.get("priceToBook")
         mktcap = info.get("marketCap")
         mktcap_b = (mktcap / 1e9) if isinstance(mktcap, (int, float)) else np.nan
+        target_mean = info.get("targetMeanPrice")
+        cur_price = info.get("currentPrice") or info.get("regularMarketPrice")
+        upside_pct = np.nan
+        if isinstance(target_mean, (int, float)) and isinstance(cur_price, (int, float)) and cur_price > 0:
+            upside_pct = round((target_mean - cur_price) / cur_price * 100, 1)
         return {
             "pe": _safe_num(pe),
             "pb": _safe_num(pb),
             "div": _normalize_dividend_yield(info.get("dividendYield")),
             "mktcap_b": _safe_num(mktcap_b),
+            "rev_growth": _safe_num(info.get("revenueGrowth"), 4),
+            "earn_growth": _safe_num(info.get("earningsGrowth"), 4),
+            "profit_margin": _safe_num(info.get("profitMargins"), 4),
+            "roe": _safe_num(info.get("returnOnEquity"), 4),
+            "debt_to_equity": _safe_num(info.get("debtToEquity"), 1),
+            "rec_key": info.get("recommendationKey"),  # 'strong_buy'/'buy'/'hold'/'underperform'/'sell'/None
+            "target_mean_price": _safe_num(target_mean),
+            "upside_pct": upside_pct,
         }
     except Exception as e:
         log_err(f"fundamentals({ticker})", e)
-        return {"pe": np.nan, "pb": np.nan, "div": np.nan, "mktcap_b": np.nan}
+        return {"pe": np.nan, "pb": np.nan, "div": np.nan, "mktcap_b": np.nan,
+                "rev_growth": np.nan, "earn_growth": np.nan, "profit_margin": np.nan,
+                "roe": np.nan, "debt_to_equity": np.nan, "rec_key": None,
+                "target_mean_price": np.nan, "upside_pct": np.nan}
+
+
+def fundamental_score(fnd: dict) -> tuple:
+    """
+    v3.17: คะแนนพื้นฐาน 0-10 จาก 4 ด้าน (Growth, Profitability, Valuation,
+    มุมมองนักวิเคราะห์) — แนวทางเดียวกับ gem_score() ที่มีอยู่แล้วในแอป คือ
+    ให้แต้มเป็นเงื่อนไข ไม่ใช่ weighted average ของหน่วยที่ไม่เท่ากัน (เช่น
+    เอา % growth ไปบวกตรงๆ กับ P/E ไม่ได้ หน่วยคนละแบบ)
+
+    คืนค่า (score, reasons: list[str]) — ให้ reasons ไว้เพื่อความโปร่งใส
+    ว่าได้คะแนนจากตรงไหนบ้าง ไม่ใช่ตัวเลขเดียวที่เชื่อไม่ได้ว่ามาจากไหน
+
+    ⚠️ ข้อจำกัด: field ที่หาย (พบบ่อยในหุ้นเล็ก/ไมโครแคปที่ไม่มี analyst
+    coverage) จะไม่ได้/ไม่เสียคะแนนในด้านนั้น (เป็นกลาง ไม่ใช่โทษว่าแย่)
+    ทำให้หุ้นที่ข้อมูลไม่ครบอาจได้คะแนนต่ำกว่าจริงเพราะ "ข้อมูลหาย" ไม่ใช่
+    เพราะพื้นฐานแย่จริง — ต้องระวังเวลาตีความ โดยเฉพาะกับหุ้นไมโครแคป
+    """
+    s = 0.0
+    reasons = []
+
+    rg, eg = fnd.get("rev_growth"), fnd.get("earn_growth")
+    if pd.notna(rg) and rg > 0.15:
+        s += 1.25; reasons.append(f"รายได้โต {rg*100:.0f}%")
+    elif pd.notna(rg) and rg > 0.05:
+        s += 0.6
+    if pd.notna(eg) and eg > 0.15:
+        s += 1.25; reasons.append(f"กำไรโต {eg*100:.0f}%")
+    elif pd.notna(eg) and eg > 0.05:
+        s += 0.6
+
+    pm, roe = fnd.get("profit_margin"), fnd.get("roe")
+    if pd.notna(pm) and pm > 0.10:
+        s += 1.25; reasons.append(f"Margin กำไรสุทธิ {pm*100:.0f}%")
+    elif pd.notna(pm) and pm > 0:
+        s += 0.6
+    if pd.notna(roe) and roe > 0.15:
+        s += 1.25; reasons.append(f"ROE {roe*100:.0f}%")
+    elif pd.notna(roe) and roe > 0.05:
+        s += 0.6
+
+    pe = fnd.get("pe")
+    if pd.notna(pe) and 0 < pe <= 20:
+        s += 1.5; reasons.append(f"P/E {pe:.1f} ไม่แพง")
+    elif pd.notna(pe) and 20 < pe <= 35:
+        s += 0.7
+
+    rec = fnd.get("rec_key")
+    rec_score = {"strong_buy": 1.5, "buy": 1.0, "hold": 0.4}.get(rec, 0)
+    s += rec_score
+    if rec in ("strong_buy", "buy"):
+        reasons.append(f"นักวิเคราะห์ {rec.replace('_', ' ')}")
+
+    upside = fnd.get("upside_pct")
+    if pd.notna(upside) and upside > 15:
+        s += 1.0; reasons.append(f"เป้าราคานักวิเคราะห์ upside {upside:.0f}%")
+    elif pd.notna(upside) and upside > 5:
+        s += 0.4
+
+    dte = fnd.get("debt_to_equity")
+    if pd.notna(dte) and dte < 50:
+        s += 0.5
+    elif pd.notna(dte) and dte > 150:
+        s -= 0.5; reasons.append("หนี้สินสูง (D/E>150%)")
+
+    return round(min(max(s, 0), 10), 1), reasons
+
+
+def compute_watch_score(row: dict) -> tuple:
+    """
+    v3.17: คะแนนรวม 0-10 สำหรับแท็บ "หุ้นน่าติดตาม" — รวมสิ่งที่สร้างมาทั้ง
+    บทสนทนานี้เข้าด้วยกัน (Gem Score เทคนิคัล, Fundamental Score, แนวรับ
+    คุณภาพสูง, Weekly Trend) แทนที่จะดูทีละตัวแยกกัน แนวคิดคือ "confluence"
+    — หุ้นที่เข้าเงื่อนไขหลายอย่างพร้อมกันน่าสนใจกว่าหุ้นที่ดูดีแค่มุมเดียว
+
+    ⚠️ ย้ำอีกครั้ง: นี่คือน้ำหนักที่ตั้งเอง (heuristic) เหมือนทุกคะแนนอื่นใน
+    แอปนี้ ยังไม่ผ่านการพิสูจน์ทางสถิติว่ารวมกันแล้วทำนายผลตอบแทนได้จริง —
+    ไม่ใช่คำแนะนำการลงทุน ใช้เป็นจุดเริ่มต้นไปวิเคราะห์ต่อเท่านั้น
+
+    คืนค่า (score, reasons: list[str])
+    """
+    s = 0.0
+    reasons = []
+
+    gs = row.get("Gem Score", 0) or 0
+    fs = row.get("Fundamental Score", 0) or 0
+    s += gs * 0.35
+    s += fs * 0.35
+    if gs >= 6:
+        reasons.append(f"Gem Score {gs:.0f}/10")
+    if fs >= 6:
+        reasons.append(f"Fundamental Score {fs:.0f}/10")
+
+    sup = str(row.get("Support", "—"))
+    if "อยู่ที่แนวรับ" in sup:
+        s += 1.5; reasons.append("อยู่ที่แนวรับคุณภาพสูง")
+    elif "ใกล้แนวรับ" in sup:
+        s += 0.7; reasons.append("ใกล้แนวรับ")
+
+    wk = str(row.get("Weekly Trend", "—"))
+    if "Weekly Bull" in wk:
+        s += 1.0; reasons.append("เทรนด์รายสัปดาห์ขาขึ้น")
+
+    upside = row.get("Analyst Upside%")
+    if pd.notna(upside) and upside > 15:
+        s += 0.8; reasons.append(f"Analyst upside {upside:.0f}%")
+
+    return round(min(max(s, 0), 10), 1), reasons
 
 
 @st.cache_data(ttl=3600)
@@ -1217,6 +1444,7 @@ def analyze(ticker: str, period: str = "1y", interval: str = "1d", bench_tuple=N
 
         fnd = _cached_fundamentals(ticker)
         gs, gl = gem_score(ep_sc, acc_sc, vm20 or 0, rsi_val, draw or 0, fnd["mktcap_b"])
+        fund_score, fund_reasons = fundamental_score(fnd)
 
         return {
             "Ticker": ticker, "Price": round(px, 2), "ราคาปิด": prev_c,
@@ -1242,6 +1470,8 @@ def analyze(ticker: str, period: str = "1y", interval: str = "1d", bench_tuple=N
             "Weekly Trend": wk_trend, "Weekly vs EMA20w%": wk_chg,
             "RS 20D": rs20, "RS 50D": rs50,
             "P/E": fnd["pe"], "P/BV": fnd["pb"], "Div%": fnd["div"], "MktCap$B": fnd["mktcap_b"],
+            "Fundamental Score": fund_score, "Fundamental Reasons": " · ".join(fund_reasons) if fund_reasons else "—",
+            "Analyst Rec": fnd.get("rec_key") or "—", "Analyst Upside%": fnd.get("upside_pct"),
         }
     except Exception as e:
         log_err(f"analyze({ticker})", e)
@@ -2099,7 +2329,7 @@ NOTABLE_SIGNALS = ("🔥 Strong Buy", "🚀 Breakout")
 # ตอนนี้ทำให้เป็นค่าคงที่จริงในโค้ด แล้ว fetch_data.py stamp ค่านี้ลงไปในทุก
 # ไฟล์ JSON ที่เซฟ (ดู fetch_data.py) เพื่อให้ข้อมูลในอนาคตกรองตาม version
 # ได้เอง ไม่ต้องจำเองว่า "อย่าเอาผลก่อนวันที่ X มาเทียบ"
-APP_VERSION = "3.16"
+APP_VERSION = "3.19"
 
 LIVE_SCAN_SAFETY_CAP = 100
 
@@ -2146,10 +2376,7 @@ def maybe_notify_telegram(message: str) -> bool:
 # (เดิม commit ไฟล์ ~800KB เข้า repo ทุกวัน จะกลายเป็น ~300MB/ปี ในระยะยาว
 # repo จะบวมขึ้นเรื่อยๆ ไม่มีที่สิ้นสุด) แอปนี้อ่านจาก Release URL ตรงๆ
 # (public URL ไม่ต้องมี API key) ไม่ต้องพึ่งไฟล์ใน git เลย
-#
-# ⚠️ เปลี่ยนค่านี้ถ้า fork/เปลี่ยนชื่อ repo:
-GITHUB_REPO = "bigpk2002/BANNVICH01"
-RELEASE_TAG = "latest-data"
+# (GITHUB_REPO/RELEASE_TAG ย้ายไปประกาศก่อน UNIVERSE_OPTIONS แล้ว — v3.17)
 PREFETCH_URL = f"https://github.com/{GITHUB_REPO}/releases/download/{RELEASE_TAG}/latest_scan.json"
 ALERTS_URL = f"https://github.com/{GITHUB_REPO}/releases/download/{RELEASE_TAG}/alerts.json"
 # v3.7: Sector Heatmap คำนวณไว้ล่วงหน้าตอน fetch_data.py รันแล้ว (ต่อจาก df
@@ -2214,6 +2441,35 @@ def load_prefetch_alerts():
     except Exception as e:
         log_err("load_prefetch_alerts(release)", e)
     return []
+
+
+@st.cache_data(ttl=3600)
+def load_previous_snapshot(max_days_back: int = 5):
+    """
+    v3.18: โหลด snapshot ของวันก่อนหน้า (ย้อนหาได้สูงสุด max_days_back วัน
+    เผื่อวันหยุด/สุดสัปดาห์ที่ไม่มี snapshot) ใช้เทียบ "วันนี้ vs เมื่อวาน"
+    ในสรุปหน้า Dashboard (ดู fetch_data.py: เก็บ snapshot ทุกวันเป็น
+    Release แยกชื่อ snapshot-YYYY-MM-DD อยู่แล้ว)
+
+    คืนค่า (date_str หรือ None, DataFrame) — DataFrame ว่างถ้าหาไม่เจอเลย
+    ในช่วง max_days_back วัน
+    """
+    try:
+        import requests
+        today = datetime.date.today()
+        for i in range(1, max_days_back + 1):
+            d = (today - datetime.timedelta(days=i)).isoformat()
+            url = f"https://github.com/{GITHUB_REPO}/releases/download/snapshot-{d}/snapshot_{d}.json"
+            try:
+                resp = requests.get(url, timeout=10)
+                if resp.ok:
+                    payload = resp.json()
+                    return d, pd.DataFrame(payload.get("data", []))
+            except Exception:
+                continue
+    except Exception as e:
+        log_err("load_previous_snapshot", e)
+    return None, pd.DataFrame()
 
 
 @st.cache_data(ttl=300)
@@ -2499,18 +2755,30 @@ def main():
                 f'🔔 สัญญาณใหม่ตั้งแต่สแกนล่าสุด ({len(new_signal_hits)} หุ้น)</div>'
                 f'<div>{chips}</div></div>', unsafe_allow_html=True)
     elif st.session_state.ran and df.empty and bundle_gen_at:
-        st.warning("⚠️ Universe นี้ยังไม่อยู่ในข้อมูลที่ดึงไว้ล่วงหน้า — กด 🚀 Run Screener "
-                  "เพื่อดึงสดสำหรับ Universe นี้แทน")
+        # v3.19: FIX จาก self-audit — ข้อความเดิมบอกให้กด Run Screener เสมอ
+        # แต่สำหรับ "Micro/Small Cap Value" (universe ที่คัดจาก Fundamental
+        # Score อัตโนมัติ ไม่ใช่รายชื่อคงที่) การกด Run Screener จะไม่ช่วย
+        # อะไรเลยถ้า curated_universes.json ยังไม่เคยถูกสร้าง (เช่น รอบแรกหลัง
+        # deploy ฟีเจอร์นี้) เพราะ resolve_tickers() จะได้ [] กลับมา สแกน 0
+        # ตัว — ต้องรอรอบ GitHub Action ถัดไปเท่านั้น กด Run Screener ไม่ช่วย
+        if "Top 100" in universe:
+            st.warning("⚠️ ยังไม่มีรายชื่อ Top 100 สำหรับ Universe นี้ — คัดจากผลสแกนของ GitHub Action "
+                      "รอบล่าสุดเท่านั้น (ไม่ใช่รายชื่อคงที่) ถ้าเพิ่งเปิดใช้ฟีเจอร์นี้ครั้งแรก ต้องรอ/สั่งรัน "
+                      "GitHub Action ให้เสร็จก่อน 1 รอบ กด Run Screener ที่นี่จะไม่ช่วยเพราะยังไม่มีรายชื่อให้สแกน")
+        else:
+            st.warning("⚠️ Universe นี้ยังไม่อยู่ในข้อมูลที่ดึงไว้ล่วงหน้า — กด 🚀 Run Screener "
+                      "เพื่อดึงสดสำหรับ Universe นี้แทน")
 
 
     # ── TABS ────────────────────────────────────────────────
-    tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
+    tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
         "📊 Dashboard | แดชบอร์ด",
         "💎 Hidden Gems | หุ้นซ่อนเร้น",
         "🔍 Deep Dive | เจาะลึกหุ้น",
         "📈 Backtester | ทดสอบย้อนหลัง",
         "🗺️ Sector Map | แผนผังกลุ่มหุ้น",
         "⭐ Watchlist | รายการเฝ้าดู",
+        "🔭 หุ้นน่าติดตาม | Top Candidates",
     ])
 
     # ════════════════════════════════════════════════════════
@@ -2547,6 +2815,28 @@ def main():
                  "color": "#5ee6ff", "decimals": 1},
             ]
             render_animated_metric_cards(cards)
+
+            # v3.18: สรุป "วันนี้ทำอะไรดี" — รวมข้อ 1 (สรุปเร็ว) + ข้อ 3
+            # (เทียบเมื่อวาน) เป็นข้อความสั้นๆ ไม่เพิ่มคอลัมน์/ตารางใหม่ ตาม
+            # หลัก "ไม่รกตา" ที่ขอไว้ — อ่านจบใน 5 วินาทีรู้ว่าต้องดูอะไรก่อน
+            summary_bits = []
+            if strong > 0:
+                summary_bits.append(f"🔥 {strong} ตัวเข้าเงื่อนไข Strong Buy")
+            if new_signal_hits:
+                summary_bits.append(f"🆕 {len(new_signal_hits)} สัญญาณใหม่จากเมื่อวาน")
+            prev_date, prev_df = load_previous_snapshot()
+            if prev_date and not prev_df.empty and "Ticker" in prev_df.columns and "Signal" in prev_df.columns:
+                prio_map = {"🔥 Strong Buy": 0, "🚀 Breakout": 1, "📈 ขาขึ้น": 2,
+                           "⚠️ เฝ้าระวัง": 3, "🔄 Neutral": 4, "⏳ รอ Pullback": 5, "❌ ขาลง": 6}
+                today_sig = df.set_index("Ticker")["Signal"].map(prio_map)
+                prev_sig = prev_df.set_index("Ticker")["Signal"].map(prio_map)
+                common = today_sig.index.intersection(prev_sig.index)
+                if len(common) > 0:
+                    improved = int((today_sig.loc[common] < prev_sig.loc[common]).sum())
+                    worsened = int((today_sig.loc[common] > prev_sig.loc[common]).sum())
+                    summary_bits.append(f"📊 เทียบกับ {prev_date}: {improved} ตัวสัญญาณดีขึ้น, {worsened} ตัวแย่ลง")
+            if summary_bits:
+                st.info("  ·  ".join(summary_bits))
 
             st.caption("⚠️ Signal / 💎 Gem / Accum เป็นการให้คะแนนตามเงื่อนไขเทคนิคัลที่ตั้งไว้เอง "
                       "(RSI, Volume, MACD, EMA) **ยังไม่ผ่านการพิสูจน์ทางสถิติว่าทำนายผลตอบแทนได้จริง** "
@@ -3016,6 +3306,146 @@ def main():
                             st.warning(f"⚠️ ไม้นี้ใช้เงินทุนถึง {pct_of_account:.0f}% ของพอร์ต — กระจุกตัวสูง "
                                       "พิจารณาลดขนาดไม้เพื่อกระจายความเสี่ยงไปหุ้นตัวอื่นด้วย")
 
+                    st.markdown("---")
+                    # v3.18 ข้อ 5: "จุดที่ทฤษฎีผิด" — แยกจาก Stop Loss เชิงเทคนิค
+                    # โดยตั้งใจ เพราะบางทีสองจุดนี้ราคาไม่เท่ากัน (เช่น Stop Loss
+                    # อาจตั้งใกล้ๆเพื่อจำกัดขาดทุน แต่ "ทฤษฎีการลงทุนจะผิดจริง"
+                    # อาจอยู่ลึกกว่านั้นที่แนวรับสำคัญถัดไป) การแยก 2 จุดนี้ชัดเจน
+                    # ช่วยไม่ให้สับสนระหว่าง "ตัดขาดทุนเพราะวินัย" กับ "เลิกเชื่อ
+                    # ไอเดียนี้แล้วจริงๆ" ซึ่งเป็นคนละเหตุผลกัน
+                    default_invalid = round(default_stop * 0.97, 2)
+                    invalid_px = st.number_input(
+                        "❌ จุดที่ \"ทฤษฎีการลงทุนผิด\" (Thesis Invalidation) — ต่างจาก Stop Loss",
+                        min_value=0.01, value=float(default_invalid), step=0.5, key=f"pos_invalid_{sel}",
+                        help="ถ้าราคาหลุดจุดนี้ แปลว่าเหตุผลที่เคยเชื่อว่าหุ้นนี้น่าสนใจไม่จริงอีกต่อไป "
+                             "ควรหยุดถัวเฉลี่ยเพิ่ม ไม่ใช่ซื้อเพิ่มเพราะ 'ยังเชื่ออยู่'")
+                    st.caption(f"📍 ถ้าราคาหลุด **${invalid_px:,.2f}** ให้ถือว่าไอเดียนี้ผิดแล้ว หยุดซื้อเพิ่ม "
+                              "ไม่ว่าจะรู้สึกอยากถัวเฉลี่ยแค่ไหนก็ตาม")
+
+                    st.markdown("---")
+                    st.markdown("**✅ Checklist ก่อนกดซื้อจริง** (ข้อ 4)")
+                    chk1 = st.checkbox("เช็ค Win Rate ใน Backtester tab แล้ว ไม่ใช่แค่ดู Signal เฉยๆ", key=f"chk1_{sel}")
+                    chk2 = st.checkbox("ตั้ง Stop Loss + จุดทฤษฎีผิดแล้ว (ด้านบน)", key=f"chk2_{sel}")
+                    chk3 = st.checkbox("คำนวณ Position Size แล้ว ไม่ได้ซื้อตามความรู้สึก", key=f"chk3_{sel}")
+                    chk4 = st.checkbox("รับความเสี่ยงที่จะขาดทุนเต็มจำนวนที่คำนวณไว้ได้จริง", key=f"chk4_{sel}")
+                    if all([chk1, chk2, chk3, chk4]):
+                        st.success("✅ ผ่านครบ 4 ข้อ — อย่างน้อยก็ตัดสินใจอย่างมีระบบ ไม่ใช่ตามอารมณ์")
+
+                # v3.18 ข้อ 10: แผนถัวเฉลี่ยแบบมีขอบเขต — ตอบโจทย์ที่คุยกันไว้
+                # ก่อนหน้าเรื่อง "หลุดแนวรับก็ซื้อเพิ่มเรื่อยๆ เพราะยังเชื่ออยู่"
+                # ต่างจากนั้นตรงที่มีเพดานงบชัดเจน + จุดยกเลิกแผนตายตัว ไม่ใช่
+                # ไล่ซื้อไม่มีที่สิ้นสุด
+                with st.expander("📐 แผนถัวเฉลี่ยแบบมีขอบเขต (Accumulation Plan)", expanded=False):
+                    st.caption("แบ่งงบเป็นไม้ตามแนวรับจริงที่มี พร้อมจุดยกเลิกแผนชัดเจน — "
+                              "กันการ 'ซื้อเพิ่มเรื่อยๆ เพราะยังเชื่ออยู่' แบบไม่มีขอบเขต")
+
+                    ac1, ac2 = st.columns(2)
+                    with ac1:
+                        total_budget = st.number_input("💰 งบรวมสูงสุดสำหรับหุ้นตัวนี้", min_value=0.0,
+                                                        value=50000.0, step=5000.0, key=f"acc_budget_{sel}")
+                    with ac2:
+                        n_tranches = st.slider("จำนวนไม้ที่อยากแบ่ง", 2, 5, 3, key=f"acc_n_{sel}")
+
+                    hist_df = _cached_history(sel, period, interval)
+                    all_supports_below = []
+                    if hist_df is not None and not hist_df.empty:
+                        hist_df = hist_df.copy()
+                        hist_df.index = pd.to_datetime(hist_df.index)
+                        weekly_hist = resample_weekly_ohlc(hist_df)
+                        all_sw = find_support_levels(weekly_hist, lookback=52, swing_window=2, min_bars=14)
+                        all_supports_below = sorted(
+                            [s for s in all_sw if s["level"] <= px_now],
+                            key=lambda x: x["level"], reverse=True)
+
+                    if not all_supports_below:
+                        st.info("ไม่พบแนวรับที่ต่ำกว่าราคาปัจจุบันมากพอจะแบ่งไม้ — ลองดูหุ้นที่มีประวัติราคายาวกว่านี้")
+                    else:
+                        # ไม้แรกที่ราคาปัจจุบันเสมอ ไม้ที่เหลือไล่ตามแนวรับที่ลึกลงเรื่อยๆ
+                        tranche_prices = [px_now] + [s["level"] for s in all_supports_below[:n_tranches - 1]]
+                        tranche_prices = tranche_prices[:n_tranches]
+                        budget_per_tranche = total_budget / len(tranche_prices)
+
+                        plan_rows = []
+                        for i, tp in enumerate(tranche_prices):
+                            shares_i = int(budget_per_tranche // tp) if tp > 0 else 0
+                            plan_rows.append({
+                                "ไม้ที่": i + 1,
+                                "ราคา": f"${tp:,.2f}",
+                                "งบ/ไม้": f"${budget_per_tranche:,.0f}",
+                                "จำนวนหุ้น": f"{shares_i:,}",
+                            })
+                        st.dataframe(pd.DataFrame(plan_rows), use_container_width=True, hide_index=True)
+
+                        deepest = tranche_prices[-1]
+                        cancel_point = round(deepest * 0.97, 2)
+                        st.error(f"🛑 จุดยกเลิกแผนทั้งหมด: ถ้าราคาหลุด **${cancel_point:,.2f}** "
+                                f"(ต่ำกว่าแนวรับลึกสุดที่ใช้ในแผน) ให้หยุดซื้อไม้ที่เหลือทันที "
+                                "ไม่ว่าจะเหลืองบอีกเท่าไหร่ก็ตาม — แปลว่าแผนนี้ผิดแล้ว ไม่ใช่แค่ 'ยังไม่ถึงเวลา'")
+                        if len(tranche_prices) < n_tranches:
+                            st.caption(f"⚠️ หาแนวรับได้แค่ {len(tranche_prices)} ระดับ (ขอไว้ {n_tranches} ไม้) "
+                                      "— แบ่งงบตามที่มีจริงเท่านั้น ไม่ได้ยัดไม้เพิ่มที่ไม่มีแนวรับรองรับ")
+
+                # v3.18 ข้อ 7+9: บันทึกการตัดสินใจ + เตือน cooldown ถ้าขาดทุนติดกัน
+                with st.expander("📝 บันทึกการตัดสินใจของตัวเอง", expanded=False):
+                    st.caption("บันทึกไว้เพื่อย้อนดูทีหลังว่า **ตัวเอง** ตัดสินใจแม่นแค่ไหน — คนละเรื่องกับว่าระบบแม่นไหม")
+
+                    dlog = load_decision_log()
+                    streak = check_losing_streak(dlog)
+                    if streak >= 3:
+                        st.error(f"🛑 ขาดทุนติดกัน {streak} ไม้ล่าสุด — พักคิดก่อนเข้าไม้ถัดไปสักครู่ "
+                                "เช็คว่ากำลังไล่ตามทุนคืน (revenge trading) อยู่หรือเปล่า")
+
+                    dc1, dc2 = st.columns(2)
+                    with dc1:
+                        decision = st.selectbox("การตัดสินใจ", ["ซื้อ", "ไม่ซื้อ", "ขาย"], key=f"dec_choice_{sel}")
+                    with dc2:
+                        dec_note = st.text_input("เหตุผล/หมายเหตุ (ถ้ามี)", key=f"dec_note_{sel}")
+                    if st.button("💾 บันทึก", key=f"dec_save_{sel}"):
+                        # v3.19: FIX จาก self-audit — เพิ่ม "id" ไม่ซ้ำกันเลย
+                        # (เดิม match ตอนอัปเดตผลลัพธ์ด้วย ticker+date+price ซึ่ง
+                        # ไม่ unique จริง ถ้าบันทึก 2 รายการวันเดียวกัน ราคา
+                        # เดียวกัน จะโดนอัปเดตพร้อมกันทั้งคู่โดยไม่ตั้งใจ)
+                        dlog.append({
+                            "id": f"{sel}_{datetime.datetime.now().isoformat()}_{len(dlog)}",
+                            "date": datetime.date.today().isoformat(), "ticker": sel,
+                            "decision": decision, "price": float(px_now), "note": dec_note,
+                            "outcome": None, "outcome_note": "",
+                        })
+                        save_decision_log(dlog)
+                        st.success(f"บันทึกแล้ว: {decision} {sel} @ ${px_now:,.2f}")
+                        st.rerun()
+
+                    recent = [e for e in dlog if e.get("ticker") == sel][-5:]
+                    if recent:
+                        st.markdown("**ประวัติล่าสุดของหุ้นตัวนี้**")
+                        for i, entry in enumerate(reversed(recent)):
+                            ec1, ec2 = st.columns([3, 1])
+                            with ec1:
+                                out_lbl = {"win": "✅ กำไร", "loss": "❌ ขาดทุน", None: "⏳ ยังไม่ปิด"}.get(
+                                    entry.get("outcome"), "⏳ ยังไม่ปิด")
+                                st.caption(f"{entry['date']} · {entry['decision']} @ ${entry['price']:,.2f} "
+                                          f"· {out_lbl} · {entry.get('note') or '—'}")
+                            with ec2:
+                                if entry.get("outcome") is None:
+                                    outcome_key = f"outcome_{sel}_{entry.get('id', i)}"
+                                    picked = st.selectbox("ผลลัพธ์", ["ยังไม่ปิด", "กำไร", "ขาดทุน"],
+                                                          key=outcome_key, label_visibility="collapsed")
+                                    if picked != "ยังไม่ปิด":
+                                        # v3.19: FIX จาก self-audit — match ด้วย "id" ที่ unique จริง
+                                        # แทน ticker+date+price เดิม (ไม่ unique ถ้าบันทึกซ้ำวัน/ราคา
+                                        # เดียวกัน จะโดนอัปเดตผิดตัวได้) รายการเก่าที่ไม่มี id (บันทึก
+                                        # ไว้ก่อน v3.19) จะ fallback ไปใช้ ticker+date+price เหมือนเดิม
+                                        target_id = entry.get("id")
+                                        for e2 in dlog:
+                                            if target_id is not None:
+                                                if e2.get("id") == target_id:
+                                                    e2["outcome"] = "win" if picked == "กำไร" else "loss"
+                                            elif (e2.get("ticker") == entry["ticker"] and
+                                                  e2.get("date") == entry["date"] and e2.get("price") == entry["price"]):
+                                                e2["outcome"] = "win" if picked == "กำไร" else "loss"
+                                        save_decision_log(dlog)
+                                        st.rerun()
+
             st.caption("📈 กราฟจาก TradingView · 🟡 EMA20 · 🔵 EMA50 · 🔴 EMA200 · RSI · MACD")
             tv_chart(sel, height=ch_h, interval=ch_iv)
 
@@ -3274,6 +3704,14 @@ def main():
         st.caption("รายการหุ้นที่คุณเฝ้าดู — บันทึกถาวรบน disk ของแอป (อยู่ข้าม session/refresh ปกติ "
                    "แต่จะถูกล้างถ้า redeploy ใหม่จาก git push)")
 
+        # v3.18: เตือนถ้า Watchlist ใหญ่เกินจนดูแลไม่ทั่ว (ข้อ 8) — นักลงทุน
+        # มือใหม่มักถือ/เฝ้าหุ้นเยอะเกินจนบริหารความเสี่ยงจริงไม่ไหว เกณฑ์ 20
+        # ตัวเป็นเลขกลมๆที่พอเฝ้าดูรายวันได้จริง ไม่ใช่ hard limit (ยังใช้งาน
+        # ได้ปกติแค่เตือนเฉยๆ)
+        if len(st.session_state.watchlist) > 20:
+            st.warning(f"⚠️ มี {len(st.session_state.watchlist)} ตัวใน Watchlist — เยอะเกินกว่าจะเฝ้าดูได้ทั่วถึงทุกวันไหม? "
+                      "ลองพิจารณาตัดตัวที่ไม่ได้ติดตามจริงจังออก จะได้โฟกัสตัวที่สำคัญจริงๆ")
+
         wc1, wc2, wc3 = st.columns([3, 1, 1])
         with wc1:
             new_tk = st.text_input("ชื่อหุ้น", placeholder="เช่น AAPL หรือ PTT.BK", key="wl_new")
@@ -3359,6 +3797,82 @@ def main():
                         bt_df = pd.DataFrame(bt_rows)
                         st.dataframe(make_table(bt_df, {"Win%": _sty_wr, "Avg Ret%": _sty_rs, "vs Buy&Hold%": _sty_rs}),
                                      use_container_width=True)
+
+    # ════════════════════════════════════════════════════════
+    # TAB 7: หุ้นน่าติดตาม (TOP CANDIDATES) — v3.17
+    # ════════════════════════════════════════════════════════
+    with tab7:
+        st.markdown("### 🔭 หุ้นน่าติดตาม")
+        st.caption("รวมเทคนิคัล (Gem Score) + ปัจจัยพื้นฐาน (Fundamental Score) + แนวรับ + เทรนด์รายสัปดาห์ "
+                  "เข้าด้วยกัน — หุ้นที่เข้าเงื่อนไขพร้อมกันหลายอย่างจะขึ้นมาก่อน")
+        st.warning("⚠️ **ไม่ใช่คำแนะนำการลงทุน** — เป็นคะแนนรวมจากเงื่อนไขทางเทคนิคัล/พื้นฐานที่ตั้งเอง "
+                  "(heuristic) ยังไม่ผ่านการพิสูจน์ทางสถิติว่าทำนายผลตอบแทนได้จริง โดยเฉพาะ Fundamental "
+                  "Score ที่หุ้นเล็ก/ไมโครแคปหลายตัวข้อมูลนักวิเคราะห์ไม่ครบ อาจได้คะแนนต่ำกว่าจริงเพราะ "
+                  "\"ข้อมูลหาย\" ไม่ใช่เพราะพื้นฐานแย่ ใช้เป็นจุดเริ่มต้นไปวิเคราะห์ต่อเท่านั้น")
+
+        if df.empty:
+            st.info("ยังไม่มีข้อมูล — เลือก Universe ที่มีข้อมูลก่อน (ดู Dashboard tab)")
+        else:
+            req_cols = {"Gem Score", "Fundamental Score"}
+            if not req_cols.issubset(df.columns):
+                st.info("Universe นี้ยังไม่มีข้อมูล Fundamental Score ครบ (อาจเป็นข้อมูลจากรอบ prefetch "
+                       "เก่าก่อนมีฟีเจอร์นี้) — ลอง Run Screener สแกนสด หรือรอรอบ prefetch ถัดไป")
+            else:
+                # v3.19: FIX จาก self-audit — เดิม .iterrows() วนทั้ง df (อาจ
+                # ถึง 2,000 แถวสำหรับ universe ใหญ่) ทุกครั้งที่มีอะไรเปลี่ยน
+                # แล้ว "ทุกครั้ง" หมายถึงจริงๆ เพราะ st.tabs() รันทุกแท็บทุก
+                # rerun ไม่ใช่แค่แท็บที่เปิดอยู่ (จุดที่เคยคุยกันไว้เรื่อง
+                # performance) — วิธีแก้: คำนวณคะแนนแบบ vectorized (เร็ว) ก่อน
+                # เพื่อหา Top 30 แล้วค่อยทำ per-row reason string (ช้ากว่า)
+                # เฉพาะ 30 แถวสุดท้ายเท่านั้น ไม่ว่า universe จะใหญ่แค่ไหน
+                # ต้นทุนก็คงที่เสมอ
+                gs = pd.to_numeric(df.get("Gem Score"), errors="coerce").fillna(0)
+                fs = pd.to_numeric(df.get("Fundamental Score"), errors="coerce").fillna(0)
+                fast_score = gs * 0.35 + fs * 0.35
+                if "Support" in df.columns:
+                    sup_s = df["Support"].astype(str)
+                    fast_score = fast_score + np.where(sup_s.str.contains("อยู่ที่แนวรับ", na=False), 1.5,
+                                             np.where(sup_s.str.contains("ใกล้แนวรับ", na=False), 0.7, 0.0))
+                if "Weekly Trend" in df.columns:
+                    wk_s = df["Weekly Trend"].astype(str)
+                    fast_score = fast_score + np.where(wk_s.str.contains("Weekly Bull", na=False), 1.0, 0.0)
+                if "Analyst Upside%" in df.columns:
+                    up_s = pd.to_numeric(df["Analyst Upside%"], errors="coerce")
+                    fast_score = fast_score + np.where(up_s > 15, 0.8, 0.0)
+                fast_score = fast_score.clip(lower=0, upper=10).round(1)
+
+                top30_idx = fast_score[fast_score > 0].sort_values(ascending=False).head(30).index
+                watch_rows = []
+                for _, r in df.loc[top30_idx].iterrows():  # ≤30 แถวเสมอ ไม่ว่า universe ใหญ่แค่ไหน
+                    ws, wr = compute_watch_score(r.to_dict())
+                    watch_rows.append({
+                        "Ticker": r.get("Ticker"), "Price": r.get("Price"),
+                        "Watch Score": ws, "เหตุผล": " · ".join(wr) if wr else "—",
+                        "Gem Score": r.get("Gem Score"), "Fundamental Score": r.get("Fundamental Score"),
+                        "Support": r.get("Support"), "Support Zone": r.get("Support Zone"),
+                        "Weekly Trend": r.get("Weekly Trend"), "Signal": r.get("Signal"),
+                        "Analyst Rec": r.get("Analyst Rec"), "Analyst Upside%": r.get("Analyst Upside%"),
+                    })
+                watch_df = pd.DataFrame(watch_rows).sort_values("Watch Score", ascending=False) if watch_rows else pd.DataFrame()
+
+                if watch_df.empty:
+                    st.info("ไม่พบหุ้นที่เข้าเงื่อนไขใน Universe ปัจจุบัน ลองเปลี่ยน Universe หรือ Sector")
+                else:
+                    st.markdown(f"**Top {len(watch_df)} หุ้นที่คะแนนรวมสูงสุด**")
+                    wsmap2 = {"Signal": _sty_signal, "Support": _sty_support, "Weekly Trend": _sty_weekly}
+                    st.dataframe(make_table(watch_df, wsmap2), use_container_width=True, height=560)
+
+                    with st.expander("📖 Watch Score คำนวณจากอะไร"):
+                        st.markdown("""
+- **Gem Score × 0.35** — เทคนิคัล: EMA สวย + สะสมเงียบ + Volume/RSI เหมาะสม
+- **Fundamental Score × 0.35** — Growth + Profitability + Valuation + มุมมองนักวิเคราะห์
+- **+1.5** ถ้าอยู่ที่แนวรับคุณภาพสูง / **+0.7** ถ้าใกล้แนวรับ
+- **+1.0** ถ้าเทรนด์รายสัปดาห์เป็นขาขึ้น (Weekly Bull)
+- **+0.8** ถ้าราคาเป้าหมายนักวิเคราะห์สูงกว่าราคาปัจจุบัน >15%
+
+คะแนนเต็ม 10 — ดูคอลัมน์ "เหตุผล" เพื่อรู้ว่าหุ้นตัวนั้นเข้าเงื่อนไขไหนบ้าง
+ไม่ใช่ตัวเลขเดียวที่เชื่อไม่ได้ว่ามาจากไหน
+                        """)
 
 
 if __name__ == "__main__":
