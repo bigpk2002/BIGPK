@@ -2122,7 +2122,7 @@ def sector_heatmap_data_live() -> pd.DataFrame:
     เยอะขึ้นกว่าเดิมมาก (~18 ตัว/sector แทน 5 ตัว) แต่เพราะฟังก์ชันนี้ใช้
     debug นอก UI เท่านั้น ไม่กระทบผู้ใช้จริง จึงเลือกความแม่นยำมากกว่าความไว
     """
-    _, bundle_df = load_prefetched_bundle()
+    _, bundle_df, _ = load_prefetched_bundle()
     use_bundle = bundle_df is not None and not bundle_df.empty and "Ticker" in bundle_df.columns
 
     rows = []
@@ -2184,7 +2184,7 @@ import streamlit as st
 # กลางทาง จะไม่มีทางแยกออกว่าข้อมูลไหน "ก่อน/หลัง" การเปลี่ยนนั้น ตอนนี้ทำให้
 # เป็นค่าคงที่จริงในโค้ด แล้ว fetch_data.py stamp ค่านี้ลงไปในทุกไฟล์ JSON
 # ที่เซฟ (ดู fetch_data.py) เพื่อให้ข้อมูลในอนาคตกรองตาม version ได้เอง
-APP_VERSION = "3.25"
+APP_VERSION = "3.26"
 
 LIVE_SCAN_SAFETY_CAP = 100
 
@@ -2216,14 +2216,22 @@ def load_prefetched_bundle():
     บวม) ลองไฟล์ local ก่อนเผื่อรันทดสอบในเครื่องเอง ถ้าไม่มีค่อย fallback
     ไปดึงจาก Release
 
-    คืนค่า (generated_at: str|None, df: pd.DataFrame) — ถ้ายังไม่มีข้อมูล
-    เลย (เช่น ก่อน Action รันรอบแรก) จะคืน (None, DataFrame ว่าง)
+    v3.26: เพิ่มคืนค่า app_version ด้วย — fetch_data.py stamp field นี้ลงไป
+    ในทุกไฟล์ JSON มาตั้งแต่ v3.12 แต่ไม่เคยมีที่ไหนในแอปดึงมาโชว์ให้เห็นเลย
+    สักที่ (เจอตอนช่วยผู้ใช้ debug ปัญหา "คอลัมน์หาย" — เถียงกันไปมาว่าเป็น
+    เพราะ deploy โค้ดใหม่ไม่ครบ หรือโค้ดมีบั๊ก ทั้งที่มีเครื่องมือเช็คได้ชัดๆ
+    อยู่แล้วแต่ไม่เคยโชว์ให้ใครเห็น) ตอนนี้โชว์คู่กับเวลา "ดึงล่าสุด" ในแบนเนอร์
+    เลย เทียบกับเลข APP_VERSION ของโค้ดที่รันอยู่ตอนนี้ได้ทันทีว่าตรงกันไหม
+
+    คืนค่า (generated_at: str|None, df: pd.DataFrame, app_version: str|None)
+    ถ้ายังไม่มีข้อมูลเลย (เช่น ก่อน Action รันรอบแรก) จะคืน (None, DataFrame
+    ว่าง, None)
     """
     if os.path.exists(PREFETCH_PATH):
         try:
             with open(PREFETCH_PATH, "r", encoding="utf-8") as f:
                 payload = json.load(f)
-            return payload.get("generated_at"), pd.DataFrame(payload.get("data", []))
+            return payload.get("generated_at"), pd.DataFrame(payload.get("data", [])), payload.get("app_version")
         except Exception as e:
             log_err("load_prefetched_bundle(local)", e)
     try:
@@ -2231,10 +2239,10 @@ def load_prefetched_bundle():
         resp = requests.get(PREFETCH_URL, timeout=15)
         if resp.ok:
             payload = resp.json()
-            return payload.get("generated_at"), pd.DataFrame(payload.get("data", []))
+            return payload.get("generated_at"), pd.DataFrame(payload.get("data", [])), payload.get("app_version")
     except Exception as e:
         log_err("load_prefetched_bundle(release)", e)
-    return None, pd.DataFrame()
+    return None, pd.DataFrame(), None
 
 
 @st.cache_data(ttl=3600)
@@ -2435,6 +2443,7 @@ def main():
 
     auto_loaded = False
     bundle_gen_at = None
+    bundle_app_version = None
 
     # ── Run screener (กดเอง = สแกนสดตอนนี้เลย ไม่รอรอบ prefetch ทุกวันหลังตลาดปิด) ──
     if run_btn:
@@ -2468,7 +2477,7 @@ def main():
     # ไม่ได้ไปคุยกับ Yahoo ตอนคนเข้าดูเลย แค่อ่านไฟล์ที่ fetch_data.py
     # (รันจาก GitHub Action ทุกวันหลังตลาดปิด) เตรียมไว้ให้แล้ว
     else:
-        bundle_gen_at, bundle_df = load_prefetched_bundle()
+        bundle_gen_at, bundle_df, bundle_app_version = load_prefetched_bundle()
         if bundle_gen_at:
             # v3.11: BUG FIX — เดิมกรอง bundle ด้วย tickers_use (ตัดตาม
             # max_tk แบบเรียงตัวอักษรก่อนแล้วค่อยกรอง) แปลว่าต่อให้ bundle มี
@@ -2540,12 +2549,28 @@ def main():
                 gen_lbl = gen_dt.astimezone(ZoneInfo("Asia/Bangkok")).strftime("%d/%m %H:%M น.")
             except Exception:
                 gen_lbl = str(bundle_gen_at) or "—"
+
+            # v3.26: โชว์ app_version ของ "ข้อมูล" เทียบกับ APP_VERSION ของ
+            # "โค้ด" ที่รันอยู่ตอนนี้ — เดิมมีการ stamp version ไว้ในข้อมูลแล้ว
+            # ตั้งแต่ v3.12 แต่ไม่เคยเอามาโชว์ให้ใครเห็นเลยสักที่ ทำให้ตอน
+            # debug ปัญหา "คอลัมน์หาย" ต้องเดากันไปมาว่าเป็นเพราะ deploy ไม่
+            # ครบหรือโค้ดมีบั๊ก ทั้งที่เช็คตรงนี้ที่เดียวก็รู้คำตอบทันที
+            ver_html = ""
+            if bundle_app_version and bundle_app_version != APP_VERSION:
+                ver_html = (f' · <span style="color:#ffc857;">⚠️ ข้อมูล v{bundle_app_version} '
+                           f'≠ โค้ด v{APP_VERSION} (สแกนด้วยโค้ดเก่ากว่า — รอ/สั่งรัน GitHub Action '
+                           f'ใหม่เพื่อได้คอลัมน์ล่าสุดครบ)</span>')
+            elif bundle_app_version:
+                ver_html = f' · <span style="color:#5b7299;">data v{bundle_app_version}</span>'
+            else:
+                ver_html = ' · <span style="color:#ffc857;">⚠️ ข้อมูลนี้เก่ามาก (ก่อน v3.12 ที่เริ่ม stamp version)</span>'
+
             st.markdown(
                 f'<div style="background:#101c33;border:1px solid #22344f;border-radius:8px;'
-                f'padding:8px 14px;margin-bottom:10px;display:flex;align-items:center;gap:10px;">'
+                f'padding:8px 14px;margin-bottom:10px;display:flex;align-items:center;gap:10px;flex-wrap:wrap;">'
                 f'<span style="color:#34f5a4;font-size:0.85rem;">⚡ ข้อมูลล่วงหน้า — อัปเดตอัตโนมัติทุกวันหลังตลาดปิด</span>'
                 f'<span style="color:#5b7299;font-size:0.8rem;">ดึงล่าสุด {gen_lbl} · {universe} · '
-                f'{len(df)} หุ้น</span>'
+                f'{len(df)} หุ้น{ver_html}</span>'
                 f'<span style="color:#44587f;font-size:0.75rem;">— ไม่ต้องรอ ไม่ต้องกด Run</span>'
                 f'</div>', unsafe_allow_html=True)
             # v3.12: เดิม ticker ที่หาไม่เจอเลยใน bundle (delisted/rate-limit
@@ -3524,7 +3549,7 @@ def main():
             scan_wl = st.button("🔄 Scan Watchlist ทั้งหมด | Scan All", key="wl_scan")
             if scan_wl:
                 with st.spinner("กำลังวิเคราะห์ Watchlist…"):
-                    _, bundle_df_wl = load_prefetched_bundle()
+                    _, bundle_df_wl, _ = load_prefetched_bundle()
                     wl_df_result, wl_dropped = get_with_bundle_fallback(
                         st.session_state.watchlist, bundle_df_wl, max_live_fallback=50)
                     st.session_state["wl_df"] = wl_df_result
