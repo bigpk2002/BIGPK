@@ -159,8 +159,6 @@ CACHE_DIR = os.path.join(
 os.makedirs(CACHE_DIR, exist_ok=True)
 
 WATCHLIST_PATH = os.path.join(CACHE_DIR, "watchlist.json")
-SIGNALS_DIR = os.path.join(CACHE_DIR, "last_signals")
-os.makedirs(SIGNALS_DIR, exist_ok=True)
 
 
 # ─────────────────────────────────────────────────────────────
@@ -312,35 +310,6 @@ def check_losing_streak(log: list, threshold: int = 3) -> int:
             break
         # outcome None (ยังไม่ปิดไม้) ข้ามไปเรื่อยๆ ไม่นับ ไม่ตัด streak
     return streak
-
-
-# ─────────────────────────────────────────────────────────────
-# LAST-SIGNAL SNAPSHOT — สำหรับแจ้งเตือน "สัญญาณใหม่ตั้งแต่สแกนล่าสุด" (ใหม่ v3.0)
-# ─────────────────────────────────────────────────────────────
-def _signals_path(universe: str) -> str:
-    safe = "".join(c for c in universe if c.isalnum())[:30] or "default"
-    return os.path.join(SIGNALS_DIR, f"{safe}.json")
-
-
-def load_last_signals(universe: str) -> dict:
-    path = _signals_path(universe)
-    if not os.path.exists(path):
-        return {}
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except Exception as e:
-        log_err("load_last_signals", e)
-        return {}
-
-
-def save_last_signals(universe: str, mapping: dict) -> None:
-    path = _signals_path(universe)
-    try:
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump(mapping, f, ensure_ascii=False)
-    except Exception as e:
-        log_err("save_last_signals", e)
 
 
 # ════════════════════════════════════════════════════════
@@ -523,58 +492,19 @@ SECTOR_MAP = {
     "🏠 REIT | กองทุนอสังหา":         ["O","PLD","AMT","EQIX","PSA","DLR","SPG","AVB","EQR","WELL","VTR","ARE","BXP","KIM","REG","IIPR"],
 }
 
-# v3.17: ย้าย GITHUB_REPO/RELEASE_TAG มาประกาศตรงนี้ (เดิมอยู่ถัดจาก
-# UNIVERSE_OPTIONS มาก) เพราะ UNIVERSE_OPTIONS ตอนนี้ต้องใช้ฟังก์ชันที่พึ่งพา
-# ค่านี้ (fetch_micro_cap_top100/fetch_small_cap_top100) — ต้อง define ก่อน
-# ใช้งานจริงเสมอสำหรับ dict literal (ต่างจากในฟังก์ชันที่ resolve ตอนเรียกใช้)
-#
-# ⚠️ เปลี่ยนค่านี้ถ้า fork/เปลี่ยนชื่อ repo:
+# v3.20: ย้อนกลับ v3.17 ตามที่ตัดสินใจ — ข้อมูลพื้นฐานของหุ้นเล็ก/ไมโครแคป
+# จาก yfinance ไม่ครบเป็นเรื่องปกติ เสี่ยงให้ "Top 100" กลายเป็น "100 ตัวที่
+# บังเอิญมีข้อมูลครบ" มากกว่า "100 ตัวที่ดีที่สุดจริง" — กลับไปใช้
+# Russell 2000 Small Cap / US Broad Market แบบเดิม (รายชื่อคงที่ ไม่คัดกรอง
+# อัตโนมัติ แต่อย่างน้อยไม่มี bias จากข้อมูลที่หายไม่เท่ากัน)
 GITHUB_REPO = "bigpk2002/BANNVICH01"
 RELEASE_TAG = "latest-data"
-
-# v3.17: Micro/Small Cap Top 100 — คัดจาก fetch_data.py ทุกวัน (ต่อจาก df ที่
-# สแกนเสร็จอยู่แล้ว ไม่ยิง Yahoo เพิ่ม) เรียงตาม Fundamental Score สูงสุดใน
-# ช่วง Market Cap ที่กำหนด แทนที่ "Russell 2000 Small Cap"/"US Broad Market"
-# เดิมที่เป็นแค่รายชื่อคงที่ไม่ได้คัดกรองอะไร — สองยูนิเวิร์สเดิมยังใช้เป็น
-# candidate pool ภายในอยู่ (ดู fetch_data.py) แค่ไม่โชว์เป็นตัวเลือกตรงๆแล้ว
-CURATED_UNIVERSES_URL = f"https://github.com/{GITHUB_REPO}/releases/download/{RELEASE_TAG}/curated_universes.json"
-CURATED_UNIVERSES_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "curated_universes.json")
-
-
-@st.cache_data(ttl=300)
-def load_curated_universes() -> dict:
-    """โหลดรายชื่อ Micro/Small Cap Top 100 ที่ fetch_data.py คัดไว้ล่วงหน้า
-    แล้วเมื่อคืน — คืน dict ว่างถ้ายังไม่มี (เช่น ก่อน GitHub Action รันรอบแรก
-    หลังอัปเดตฟีเจอร์นี้) โครงสร้างเหมือน load_prefetched_bundle() อื่นๆ"""
-    if os.path.exists(CURATED_UNIVERSES_PATH):
-        try:
-            with open(CURATED_UNIVERSES_PATH, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except Exception as e:
-            log_err("load_curated_universes(local)", e)
-    try:
-        import requests
-        resp = requests.get(CURATED_UNIVERSES_URL, timeout=15)
-        if resp.ok:
-            return resp.json()
-    except Exception as e:
-        log_err("load_curated_universes(release)", e)
-    return {}
-
-
-def fetch_micro_cap_top100() -> list:
-    return load_curated_universes().get("micro_cap_top100", [])
-
-
-def fetch_small_cap_top100() -> list:
-    return load_curated_universes().get("small_cap_top100", [])
-
 
 UNIVERSE_OPTIONS = {
     "S&P 500 (503)": fetch_sp500,
     "Nasdaq 100 (101)": fetch_nasdaq100,
-    "Micro Cap Value (<$700M) — Top 100": fetch_micro_cap_top100,
-    "Small Cap Value (<$2B) — Top 100": fetch_small_cap_top100,
+    "Russell 2000 Small Cap": fetch_russell2000,
+    "US Broad Market (~700)": fetch_broad_us,
     "หุ้นไทย SET/mai": fetch_set,
     "ETF Screener (70)": fetch_etfs,
     "Sector Focus | เลือกตามหมวด": None,
@@ -1013,10 +943,10 @@ def quiet_accumulation(volumes: pd.Series, closes: pd.Series, rsi: float, n: int
 
 def weekly_trend(df: pd.DataFrame) -> tuple:
     """
-    v3.7: เทรนด์รายสัปดาห์ — เพิ่มเป็น "ตัวกรองเสริม" คู่กับ Signal รายวันเดิม
+    v3.7: เทรนด์รายสัปดาห์ — เพิ่มเป็น "ตัวกรองเสริม" คู่กับ Trend รายวันเดิม
     ไม่ได้เปลี่ยนทั้งระบบไปเป็นรายสัปดาห์ เพราะ threshold เดิมทั้งหมด (RSI,
-    MACD, Volume ฯลฯ ใน strategy_signal/quiet_accumulation) tune ไว้บน
-    พฤติกรรมแท่งรายวันโดยเฉพาะ เปลี่ยนทั้งระบบจะทำให้ signal เดิมเพี้ยนหมด
+    MACD, Volume ฯลฯ ใน quiet_accumulation) tune ไว้บนพฤติกรรมแท่งรายวัน
+    โดยเฉพาะ เปลี่ยนทั้งระบบจะทำให้ตัวชี้วัดเดิมเพี้ยนหมด
 
     ใช้ resample() จากข้อมูลรายวันที่ analyze() ดึงมาอยู่แล้ว — ไม่ยิง Yahoo
     เพิ่มอีก request ต่อ ticker
@@ -1096,34 +1026,6 @@ def gem_score(pat_score, acc_score, vol20, rsi, drawdown, mktcap_b) -> tuple:
     s = min(s, 10)
     lbl = "💎 Hidden Gem" if s >= 8 else "🔭 Emerging Gem" if s >= 6 else "👀 Watch" if s >= 4 else "—"
     return s, lbl
-
-
-def strategy_signal(price, e200, e50, rsi, vol20, macd_h, stars) -> tuple:
-    """
-    v3.4: เดิมคืนแค่ label เฉยๆ (เช่น "🔥 Strong Buy") คนต้องกดเข้า Deep Dive
-    ไปดูตัวเลข RSI/Vol/MACD แยกทีละหุ้นเองว่าทำไมได้สัญญาณนี้ ตอนนี้คืน
-    เหตุผลสั้นๆมาด้วยในตัวเดียวกัน เอาไปโชว์ในตารางหลักได้ตรงๆ ไม่ต้องเดา
-
-    ย้ำ: เงื่อนไขด้านล่างเป็น threshold ที่ตั้งเองตามหลักการวิเคราะห์เทคนิคัล
-    ทั่วไป (RSI, Volume, MACD) ไม่ได้ผ่านการ backtest แยกทีละสัญญาณว่าให้ผล
-    ตอบแทนจริงดีกว่าสุ่มหรือไม่ — เป็น heuristic ไม่ใช่โมเดลที่พิสูจน์ทางสถิติ
-    """
-    p200 = (price - e200) / e200 * 100 if e200 > 0 else 999
-    if len(stars) >= 3 and rsi < 40 and vol20 > 1.8 and macd_h > 0 and -5 <= p200 <= 3:
-        return "🔥 Strong Buy", f"RSI ต่ำ ({rsi:.0f}) + Volume สูง ({vol20:.1f}x) + MACD เป็นบวก + ใกล้ EMA200"
-    if vol20 > 2.0 and price > e50 > e200 and macd_h > 0 and 50 <= rsi <= 75:
-        return "🚀 Breakout", f"Volume พุ่ง ({vol20:.1f}x) + ราคา>EMA50>EMA200 + MACD เป็นบวก"
-    if price > e50 > e200 and 40 <= rsi <= 70:
-        return "📈 ขาขึ้น", f"ราคา>EMA50>EMA200 เรียงตัวสวย + RSI ปกติ ({rsi:.0f})"
-    if abs(p200) <= 3 and rsi < 50 and macd_h < 0:
-        return "⚠️ เฝ้าระวัง", f"ราคาใกล้ EMA200 แต่ MACD เป็นลบ + RSI<50 ({rsi:.0f}) — ทิศทางยังไม่ชัด"
-    if rsi > 75:
-        return "⏳ รอ Pullback", f"RSI สูงมาก ({rsi:.0f}) ซื้อตามนี้เสี่ยงไล่ราคา"
-    if price < e200:
-        if rsi < 30:
-            return "⚠️ Oversold Bear", f"ราคา<EMA200 และ RSI<30 ({rsi:.0f}) — oversold แต่เทรนด์หลักยังลง"
-        return "❌ ขาลง", "ราคาต่ำกว่า EMA200 — เทรนด์หลักเป็นขาลง"
-    return "🔄 Neutral", "ไม่เข้าเงื่อนไขสัญญาณชัดเจนข้อใดข้อหนึ่ง"
 
 
 def conservative_stars(price, e200, rsi, vol20, drawdown) -> str:
@@ -1227,15 +1129,10 @@ def _safe_num(val, decimals=2):
 @st.cache_data(ttl=21600)  # 6 ชม. — fundamentals เปลี่ยนช้ากว่าราคามาก ไม่ต้องดึงซ้ำทุกสแกน
 def _cached_fundamentals(ticker: str) -> dict:
     """
-    v3.17: เพิ่ม field growth/profitability/มุมมองนักวิเคราะห์ (revenueGrowth,
-    earningsGrowth, profitMargins, returnOnEquity, debtToEquity,
-    recommendationKey, targetMeanPrice) สำหรับใช้คำนวณ fundamental_score()
-    — ทุก field มาจาก .info response เดียวกับที่ดึงอยู่แล้ว (_download_info)
-    ไม่ได้ยิง Yahoo เพิ่มอีก request เลย แค่ดึงข้อมูลที่มากับ response เดิม
-    ให้ครบขึ้น
-
-    ⚠️ หุ้นเล็ก/ไมโครแคปจำนวนมากไม่มี field พวกนี้ครบ (ไม่มี analyst coverage)
-    — ถ้าหาย จะเป็น NaN/None เฉยๆ ไม่ใช่ error ผู้เรียกต้องเช็ค NaN เอง
+    v3.20: ย้อนกลับเป็นเวอร์ชันเดิมก่อน v3.17 — ตัด Fundamental Score /
+    Analyst Rec / Upside% ออกทั้งหมด (ดู CHANGELOG v3.20 สำหรับเหตุผล: ตัดคู่
+    กับการเอา Micro/Small Cap Value + แท็บ "หุ้นน่าติดตาม" ออก เพราะเป็นตัว
+    เดียวที่ใช้ field พวกนี้ ทำให้กลายเป็นโค้ดที่ไม่มีใครเรียกใช้แล้ว)
     """
     try:
         info = _download_info(ticker)
@@ -1243,138 +1140,15 @@ def _cached_fundamentals(ticker: str) -> dict:
         pb = info.get("priceToBook")
         mktcap = info.get("marketCap")
         mktcap_b = (mktcap / 1e9) if isinstance(mktcap, (int, float)) else np.nan
-        target_mean = info.get("targetMeanPrice")
-        cur_price = info.get("currentPrice") or info.get("regularMarketPrice")
-        upside_pct = np.nan
-        if isinstance(target_mean, (int, float)) and isinstance(cur_price, (int, float)) and cur_price > 0:
-            upside_pct = round((target_mean - cur_price) / cur_price * 100, 1)
         return {
             "pe": _safe_num(pe),
             "pb": _safe_num(pb),
             "div": _normalize_dividend_yield(info.get("dividendYield")),
             "mktcap_b": _safe_num(mktcap_b),
-            "rev_growth": _safe_num(info.get("revenueGrowth"), 4),
-            "earn_growth": _safe_num(info.get("earningsGrowth"), 4),
-            "profit_margin": _safe_num(info.get("profitMargins"), 4),
-            "roe": _safe_num(info.get("returnOnEquity"), 4),
-            "debt_to_equity": _safe_num(info.get("debtToEquity"), 1),
-            "rec_key": info.get("recommendationKey"),  # 'strong_buy'/'buy'/'hold'/'underperform'/'sell'/None
-            "target_mean_price": _safe_num(target_mean),
-            "upside_pct": upside_pct,
         }
     except Exception as e:
         log_err(f"fundamentals({ticker})", e)
-        return {"pe": np.nan, "pb": np.nan, "div": np.nan, "mktcap_b": np.nan,
-                "rev_growth": np.nan, "earn_growth": np.nan, "profit_margin": np.nan,
-                "roe": np.nan, "debt_to_equity": np.nan, "rec_key": None,
-                "target_mean_price": np.nan, "upside_pct": np.nan}
-
-
-def fundamental_score(fnd: dict) -> tuple:
-    """
-    v3.17: คะแนนพื้นฐาน 0-10 จาก 4 ด้าน (Growth, Profitability, Valuation,
-    มุมมองนักวิเคราะห์) — แนวทางเดียวกับ gem_score() ที่มีอยู่แล้วในแอป คือ
-    ให้แต้มเป็นเงื่อนไข ไม่ใช่ weighted average ของหน่วยที่ไม่เท่ากัน (เช่น
-    เอา % growth ไปบวกตรงๆ กับ P/E ไม่ได้ หน่วยคนละแบบ)
-
-    คืนค่า (score, reasons: list[str]) — ให้ reasons ไว้เพื่อความโปร่งใส
-    ว่าได้คะแนนจากตรงไหนบ้าง ไม่ใช่ตัวเลขเดียวที่เชื่อไม่ได้ว่ามาจากไหน
-
-    ⚠️ ข้อจำกัด: field ที่หาย (พบบ่อยในหุ้นเล็ก/ไมโครแคปที่ไม่มี analyst
-    coverage) จะไม่ได้/ไม่เสียคะแนนในด้านนั้น (เป็นกลาง ไม่ใช่โทษว่าแย่)
-    ทำให้หุ้นที่ข้อมูลไม่ครบอาจได้คะแนนต่ำกว่าจริงเพราะ "ข้อมูลหาย" ไม่ใช่
-    เพราะพื้นฐานแย่จริง — ต้องระวังเวลาตีความ โดยเฉพาะกับหุ้นไมโครแคป
-    """
-    s = 0.0
-    reasons = []
-
-    rg, eg = fnd.get("rev_growth"), fnd.get("earn_growth")
-    if pd.notna(rg) and rg > 0.15:
-        s += 1.25; reasons.append(f"รายได้โต {rg*100:.0f}%")
-    elif pd.notna(rg) and rg > 0.05:
-        s += 0.6
-    if pd.notna(eg) and eg > 0.15:
-        s += 1.25; reasons.append(f"กำไรโต {eg*100:.0f}%")
-    elif pd.notna(eg) and eg > 0.05:
-        s += 0.6
-
-    pm, roe = fnd.get("profit_margin"), fnd.get("roe")
-    if pd.notna(pm) and pm > 0.10:
-        s += 1.25; reasons.append(f"Margin กำไรสุทธิ {pm*100:.0f}%")
-    elif pd.notna(pm) and pm > 0:
-        s += 0.6
-    if pd.notna(roe) and roe > 0.15:
-        s += 1.25; reasons.append(f"ROE {roe*100:.0f}%")
-    elif pd.notna(roe) and roe > 0.05:
-        s += 0.6
-
-    pe = fnd.get("pe")
-    if pd.notna(pe) and 0 < pe <= 20:
-        s += 1.5; reasons.append(f"P/E {pe:.1f} ไม่แพง")
-    elif pd.notna(pe) and 20 < pe <= 35:
-        s += 0.7
-
-    rec = fnd.get("rec_key")
-    rec_score = {"strong_buy": 1.5, "buy": 1.0, "hold": 0.4}.get(rec, 0)
-    s += rec_score
-    if rec in ("strong_buy", "buy"):
-        reasons.append(f"นักวิเคราะห์ {rec.replace('_', ' ')}")
-
-    upside = fnd.get("upside_pct")
-    if pd.notna(upside) and upside > 15:
-        s += 1.0; reasons.append(f"เป้าราคานักวิเคราะห์ upside {upside:.0f}%")
-    elif pd.notna(upside) and upside > 5:
-        s += 0.4
-
-    dte = fnd.get("debt_to_equity")
-    if pd.notna(dte) and dte < 50:
-        s += 0.5
-    elif pd.notna(dte) and dte > 150:
-        s -= 0.5; reasons.append("หนี้สินสูง (D/E>150%)")
-
-    return round(min(max(s, 0), 10), 1), reasons
-
-
-def compute_watch_score(row: dict) -> tuple:
-    """
-    v3.17: คะแนนรวม 0-10 สำหรับแท็บ "หุ้นน่าติดตาม" — รวมสิ่งที่สร้างมาทั้ง
-    บทสนทนานี้เข้าด้วยกัน (Gem Score เทคนิคัล, Fundamental Score, แนวรับ
-    คุณภาพสูง, Weekly Trend) แทนที่จะดูทีละตัวแยกกัน แนวคิดคือ "confluence"
-    — หุ้นที่เข้าเงื่อนไขหลายอย่างพร้อมกันน่าสนใจกว่าหุ้นที่ดูดีแค่มุมเดียว
-
-    ⚠️ ย้ำอีกครั้ง: นี่คือน้ำหนักที่ตั้งเอง (heuristic) เหมือนทุกคะแนนอื่นใน
-    แอปนี้ ยังไม่ผ่านการพิสูจน์ทางสถิติว่ารวมกันแล้วทำนายผลตอบแทนได้จริง —
-    ไม่ใช่คำแนะนำการลงทุน ใช้เป็นจุดเริ่มต้นไปวิเคราะห์ต่อเท่านั้น
-
-    คืนค่า (score, reasons: list[str])
-    """
-    s = 0.0
-    reasons = []
-
-    gs = row.get("Gem Score", 0) or 0
-    fs = row.get("Fundamental Score", 0) or 0
-    s += gs * 0.35
-    s += fs * 0.35
-    if gs >= 6:
-        reasons.append(f"Gem Score {gs:.0f}/10")
-    if fs >= 6:
-        reasons.append(f"Fundamental Score {fs:.0f}/10")
-
-    sup = str(row.get("Support", "—"))
-    if "อยู่ที่แนวรับ" in sup:
-        s += 1.5; reasons.append("อยู่ที่แนวรับคุณภาพสูง")
-    elif "ใกล้แนวรับ" in sup:
-        s += 0.7; reasons.append("ใกล้แนวรับ")
-
-    wk = str(row.get("Weekly Trend", "—"))
-    if "Weekly Bull" in wk:
-        s += 1.0; reasons.append("เทรนด์รายสัปดาห์ขาขึ้น")
-
-    upside = row.get("Analyst Upside%")
-    if pd.notna(upside) and upside > 15:
-        s += 0.8; reasons.append(f"Analyst upside {upside:.0f}%")
-
-    return round(min(max(s, 0), 10), 1), reasons
+        return {"pe": np.nan, "pb": np.nan, "div": np.nan, "mktcap_b": np.nan}
 
 
 @st.cache_data(ttl=3600)
@@ -1425,12 +1199,11 @@ def analyze(ticker: str, period: str = "1y", interval: str = "1d", bench_tuple=N
         trend = "🟢 Bull" if px > ep[200] else "🔴 Bear"
         patt = candle_pattern(df)
         stars = conservative_stars(px, ep[200], rsi_val, vm20 or 0, draw or 0)
-        sig, sig_reason = strategy_signal(px, ep[200], ep[50], rsi_val, vm20 or 0, mh, stars)
 
         ep_lbl, ep_sc = ema_pattern(px, ep[5], ep[10], ep[20], ep[50], ep[100], ep[200])
         acc_sc, acc_lb = quiet_accumulation(vl, cl, rsi_val)
         sq_lbl, bw_now, bw_delta = squeeze_direction(cl)
-        age = signal_age(cl)
+        age = signal_age(cl)  # จำนวนวันตั้งแต่ราคาข้าม EMA200 ขึ้นมา (ไม่เกี่ยวกับระบบ Signal ที่ตัดออกแล้ว)
         sup = support_status(px, df, ep[50], ep[200])
         res = resistance_status(px, df, ep[50], ep[200])
         wk_trend, wk_chg = weekly_trend(df)
@@ -1444,11 +1217,10 @@ def analyze(ticker: str, period: str = "1y", interval: str = "1d", bench_tuple=N
 
         fnd = _cached_fundamentals(ticker)
         gs, gl = gem_score(ep_sc, acc_sc, vm20 or 0, rsi_val, draw or 0, fnd["mktcap_b"])
-        fund_score, fund_reasons = fundamental_score(fnd)
 
         return {
             "Ticker": ticker, "Price": round(px, 2), "ราคาปิด": prev_c,
-            "Trend": trend, "Signal": sig, "Signal Reason": sig_reason, "Phase": ep_lbl, "Stars": stars,
+            "Trend": trend, "Phase": ep_lbl, "Stars": stars,
             "EMA5": round(ep[5], 2), "EMA10": round(ep[10], 2), "EMA20": round(ep[20], 2),
             "EMA50": round(ep[50], 2), "EMA100": round(ep[100], 2), "EMA200": round(ep[200], 2),
             "vs EMA5%": ed[5], "vs EMA10%": ed[10], "vs EMA20%": ed[20],
@@ -1459,7 +1231,7 @@ def analyze(ticker: str, period: str = "1y", interval: str = "1d", bench_tuple=N
             "vs52W%": round((px - hi52) / hi52 * 100, 2) if hi52 > 0 else np.nan,
             "Candle": patt, "EMA Pattern": ep_lbl, "Pat Score": ep_sc,
             "Accum": acc_lb, "Accum Score": acc_sc, "Gem Score": gs, "💎 Gem": gl,
-            "Squeeze": sq_lbl, "BW%": bw_now, "BW Δ5d": bw_delta, "Signal Age": age,
+            "Squeeze": sq_lbl, "BW%": bw_now, "BW Δ5d": bw_delta, "Trend Age": age,
             "Support": sup["status"], "Support Level": sup["level"], "Support Dist%": sup["distance_pct"],
             "Support Zone": sup["zone_label"],
             "Support Quality": sup["quality_score"], "Support Touches": sup["touch_count"],
@@ -1470,8 +1242,6 @@ def analyze(ticker: str, period: str = "1y", interval: str = "1d", bench_tuple=N
             "Weekly Trend": wk_trend, "Weekly vs EMA20w%": wk_chg,
             "RS 20D": rs20, "RS 50D": rs50,
             "P/E": fnd["pe"], "P/BV": fnd["pb"], "Div%": fnd["div"], "MktCap$B": fnd["mktcap_b"],
-            "Fundamental Score": fund_score, "Fundamental Reasons": " · ".join(fund_reasons) if fund_reasons else "—",
-            "Analyst Rec": fnd.get("rec_key") or "—", "Analyst Upside%": fnd.get("upside_pct"),
         }
     except Exception as e:
         log_err(f"analyze({ticker})", e)
@@ -1652,14 +1422,14 @@ def backtest(ticker: str, hold_days: int = 20) -> dict:
 
 
 # ────────────────────────────────────────────────────────────
-# SIGNAL ACCURACY BACKTEST (ใหม่ v3.5)
-# ตอบคำถาม "สัญญาณแม่นแค่ไหนจริงๆ" ด้วยหลักฐานจริง ไม่ใช่แค่เชื่อ label
-# วิธีทำ: ย้อนคำนวณว่าในแต่ละวันที่ผ่านมา หุ้นแต่ละตัว "เคยได้ signal อะไร"
+# SUPPORT ACCURACY BACKTEST (v3.5, ตัด Signal ออกใน v3.21)
+# ตอบคำถาม "แนวรับแม่นแค่ไหนจริงๆ" ด้วยหลักฐานจริง ไม่ใช่แค่เชื่อ label
+# วิธีทำ: ย้อนคำนวณว่าในแต่ละวันที่ผ่านมา หุ้นแต่ละตัว "เคยอยู่ที่แนวรับไหม"
 # (ใช้ข้อมูลถึงวันนั้นเท่านั้น ไม่มี lookahead) แล้ววัดผลตอบแทนจริงในอีก
-# 10/20 วันถัดไป สรุปเป็นค่าเฉลี่ย/win rate ต่อ signal ประเภทนั้นๆ
+# 10/20 วันถัดไป สรุปเป็นค่าเฉลี่ย/win rate ต่อสถานะแนวรับประเภทนั้นๆ
 # ────────────────────────────────────────────────────────────
 
-SIGNAL_BACKTEST_SAMPLE = (
+SUPPORT_BACKTEST_SAMPLE = (
     # หุ้นใหญ่ (Large Cap) — เดิม
     "AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "META", "TSLA", "JPM", "BAC", "XOM",
     "JNJ", "UNH", "HD", "WMT", "PG", "KO", "DIS", "NFLX", "ADBE", "CRM",
@@ -1687,44 +1457,26 @@ def _wilder_rsi_series(prices: pd.Series, period: int = 14) -> pd.Series:
     return (100 - 100 / (1 + rs)).fillna(100)
 
 
-def _signal_history_for_ticker(ticker: str) -> pd.DataFrame:
-    """คำนวณ signal ของทุกวันในอดีต (2 ปี) ของหุ้นตัวเดียว + ผลตอบแทนจริงใน
-    อีก 10/20 วันถัดไปจากจุดนั้น นับเฉพาะ "จุดที่เพิ่งเปลี่ยนเป็น signal นี้"
-    (ไม่นับวันต่อเนื่องที่ signal เดิมค้างอยู่) กันไม่ให้ sample ดูมากเกินจริง
-    จากการนับวันซ้ำๆของสัญญาณเดียวกัน
-
-    v3.7: เพิ่มการย้อนคำนวณ Support status ของทุกวันด้วย (ใช้ข้อมูลถึงวันนั้น
-    เท่านั้น ไม่มี lookahead) เพื่อให้ backtest_signal_accuracy() เอาไป
-    พิสูจน์ได้ว่า "อยู่ที่แนวรับ" ในอดีตเด้งกลับขึ้นจริงกี่ % — ตอบโจทย์ที่ว่า
-    แนวรับที่ทำไว้ "ดีพอหรือยัง" ด้วยหลักฐานจริง ไม่ใช่แค่ความเห็น
+def _support_history_for_ticker(ticker: str) -> pd.DataFrame:
+    """
+    v3.21: เดิมฟังก์ชันนี้ (_signal_history_for_ticker) คำนวณทั้ง Signal
+    history และ Support history คู่กัน — ตอนนี้ตัดส่วน Signal ออกทั้งหมด
+    (ตามที่ตัดสินใจเอา Signal ออกจากทั้งระบบ) เหลือแค่ Support ซึ่งเป็นส่วน
+    ที่ตอบโจทย์ตรงๆว่า "แนวรับที่หาไว้ใช้ได้จริงแค่ไหน" — คำนวณ Support
+    status ของทุกวันในอดีต (2 ปี) ของหุ้นตัวเดียว + ผลตอบแทนจริงในอีก 10/20
+    วันถัดไปจากจุดนั้น (ใช้ข้อมูลถึงวันนั้นเท่านั้น ไม่มี lookahead)
     """
     try:
         df = _download_2y(ticker)
         if df is None or len(df) < 230:
             return pd.DataFrame()
-        cl, vl = df["Close"], df["Volume"]
+        cl = df["Close"]
         e50, e200 = ema(cl, 50), ema(cl, 200)
-        rsi_s = _wilder_rsi_series(cl)
-        ml_s = ema(cl, 12) - ema(cl, 26)
-        mh_s = ml_s - ema(ml_s, 9)
-        vm20_s = vl / vl.rolling(20).mean()
-        hi52_s = cl.rolling(252, min_periods=50).max()
-        draw_s = (cl - hi52_s) / hi52_s * 100
 
-        rows, prev_sig, prev_sup, n = [], None, None, len(df)
+        rows, prev_sup, n = [], None, len(df)
         for i in range(200, n - 20):
             px = cl.iloc[i]
-            stars = conservative_stars(px, e200.iloc[i], rsi_s.iloc[i], vm20_s.iloc[i] or 0, draw_s.iloc[i] or 0)
-            sig, _ = strategy_signal(px, e200.iloc[i], e50.iloc[i], rsi_s.iloc[i], vm20_s.iloc[i] or 0, mh_s.iloc[i], stars)
-            if sig != prev_sig:
-                rows.append({
-                    "ticker": ticker, "signal": sig, "kind": "signal",
-                    "fwd10": round((cl.iloc[i + 10] - px) / px * 100, 2),
-                    "fwd20": round((cl.iloc[i + 20] - px) / px * 100, 2),
-                })
-            prev_sig = sig
-
-            # Support — เช็คทุก 3 วัน (ไม่ใช่ทุกวัน) เพื่อลดเวลาคำนวณ เพราะ
+            # เช็คทุก 3 วัน (ไม่ใช่ทุกวัน) เพื่อลดเวลาคำนวณ เพราะ
             # find_support_levels() ทำงาน O(lookback) ต่อครั้ง ระดับแนวรับ
             # เปลี่ยนช้าอยู่แล้ว เช็คถี่ทุกวันไม่จำเป็นและไม่กระทบความแม่นยำ
             if i % 3 == 0:
@@ -1739,7 +1491,7 @@ def _signal_history_for_ticker(ticker: str) -> pd.DataFrame:
                 prev_sup = sup_sig
         return pd.DataFrame(rows)
     except Exception as e:
-        log_err(f"signal_history({ticker})", e)
+        log_err(f"support_history({ticker})", e)
         return pd.DataFrame()
 
 
@@ -1754,10 +1506,10 @@ def _confidence_flag(n: int) -> str:
     return "⚠️ น้อยมาก ไม่ควรเชื่อ"
 
 
-SIGNAL_BACKTEST_NOTES = (
+SUPPORT_BACKTEST_NOTES = (
     "ทดสอบจากหุ้นตัวอย่าง 50 ตัว ผสมหุ้นใหญ่+เล็ก/กลาง (ไม่ใช่ทุกหุ้นใน universe) "
-    "ย้อนหลัง 2 ปี · นับเฉพาะจุดที่ signal เพิ่งเปลี่ยน ไม่นับวันต่อเนื่องซ้ำ แต่ "
-    "signal จากหุ้นคนละตัวในช่วงเวลาเดียวกันอาจมีความเชื่อมโยงกัน (เช่น ตลาดรวมขึ้น) "
+    "ย้อนหลัง 2 ปี · นับเฉพาะจุดที่สถานะแนวรับเพิ่งเปลี่ยน ไม่นับวันต่อเนื่องซ้ำ แต่ "
+    "หุ้นคนละตัวในช่วงเวลาเดียวกันอาจมีความเชื่อมโยงกัน (เช่น ตลาดรวมขึ้น) "
     "ทำให้ไม่ใช่ independent sample เต็มรูปแบบ · แถวที่ 'จำนวนครั้ง' น้อย "
     "(ดูคอลัมน์ความเชื่อมั่น) ตัวเลขยังไม่น่าเชื่อถือพอทางสถิติ · ไม่หักค่าคอมมิชชั่น/"
     "สเปรด · ผลย้อนหลังไม่ใช่การันตีอนาคต ไม่ใช่คำแนะนำการลงทุน"
@@ -1765,12 +1517,13 @@ SIGNAL_BACKTEST_NOTES = (
 
 
 @st.cache_data(ttl=86400)
-def backtest_signal_accuracy(sample: tuple = SIGNAL_BACKTEST_SAMPLE) -> dict:
-    """รวมผล signal/support history ของหุ้นตัวอย่างทั้งหมด สรุปแยกเป็น 2
-    ตาราง — Strategy Signal (Strong Buy/Breakout/ฯลฯ) และ Support (อยู่ที่
-    แนวรับ/ใกล้แนวรับ) เพราะเป็นคนละกลไกกัน ควรดูแยกกัน (v3.7: เพิ่มตาราง
-    Support เข้ามาเพื่อพิสูจน์ว่าฟีเจอร์แนวรับ "ใช้ได้จริง" แค่ไหน)"""
-    all_dfs = [d for tk in sample if not (d := _signal_history_for_ticker(tk)).empty]
+def backtest_support_accuracy(sample: tuple = SUPPORT_BACKTEST_SAMPLE) -> dict:
+    """
+    v3.21: เดิมชื่อ backtest_signal_accuracy() รวม Signal+Support สองตาราง
+    — ตัด Signal ออก เหลือแค่ Support table เดียว ตอบคำถามตรงๆว่า "อยู่ที่
+    แนวรับ"/"ใกล้แนวรับ" ในอดีตเด้งกลับขึ้นจริงกี่ % ด้วยหลักฐานจริง
+    """
+    all_dfs = [d for tk in sample if not (d := _support_history_for_ticker(tk)).empty]
     if not all_dfs:
         return {"error": "ดึงข้อมูลไม่สำเร็จเลยสักตัว ลองใหม่อีกครั้ง"}
     full = pd.concat(all_dfs, ignore_index=True)
@@ -1782,14 +1535,11 @@ def backtest_signal_accuracy(sample: tuple = SIGNAL_BACKTEST_SAMPLE) -> dict:
             **{"Win Rate 10วัน%": ("fwd10", lambda x: round((x > 0).mean() * 100, 1))},
             **{"ผลตอบแทนเฉลี่ย 20วัน%": ("fwd20", "mean")},
             **{"Win Rate 20วัน%": ("fwd20", lambda x: round((x > 0).mean() * 100, 1))},
-        ).round(2).reset_index().rename(columns={"signal": "Signal"})
+        ).round(2).reset_index().rename(columns={"signal": "Support"})
         agg["ความเชื่อมั่น"] = agg["จำนวนครั้ง"].apply(_confidence_flag)
         return agg.sort_values("ผลตอบแทนเฉลี่ย 20วัน%", ascending=False)
 
-    sig_sub = full[full["kind"] == "signal"]
-    sup_sub = full[full["kind"] == "support"]
-    sig_table = _aggregate(sig_sub) if not sig_sub.empty else pd.DataFrame()
-    sup_table = _aggregate(sup_sub) if not sup_sub.empty else pd.DataFrame()
+    sup_table = _aggregate(full) if not full.empty else pd.DataFrame()
 
     # Buy & Hold เฉลี่ยของหุ้นตัวอย่างทั้งหมดในช่วงเดียวกัน เอาไว้เทียบบรรทัดฐาน
     bh_rets = []
@@ -1802,9 +1552,9 @@ def backtest_signal_accuracy(sample: tuple = SIGNAL_BACKTEST_SAMPLE) -> dict:
             pass
     bh_avg = round(float(np.mean(bh_rets)), 2) if bh_rets else None
 
-    return {"table": sig_table, "support_table": sup_table,
-            "n_tickers": len(all_dfs), "n_events": len(sig_sub), "n_support_events": len(sup_sub),
-            "buy_hold_avg": bh_avg, "notes": SIGNAL_BACKTEST_NOTES}
+    return {"support_table": sup_table,
+            "n_tickers": len(all_dfs), "n_support_events": len(full),
+            "buy_hold_avg": bh_avg, "notes": SUPPORT_BACKTEST_NOTES}
 
 
 # ════════════════════════════════════════════════════════
@@ -1991,7 +1741,7 @@ def inject_css() -> None:
     st.markdown(CSS_BLOCK, unsafe_allow_html=True)
 
 
-def _sty_signal(v):
+def _sty_generic(v):
     v = str(v)
     if "Strong Buy" in v or "Hidden Gem" in v: return "color:#34f5a4;font-weight:800;"
     if "Breakout" in v or "เบรคเอาท์" in v:   return "color:#ffd76a;font-weight:700;"
@@ -2296,25 +2046,18 @@ def sector_heatmap_data_live() -> pd.DataFrame:
 
 
 # ════════════════════════════════════════════════════════
-# [merged from lib/alerts.py]
+# [เดิม merged from lib/alerts.py — ตัดออกทั้งหมดใน v3.21]
 # ════════════════════════════════════════════════════════
-# MODULE — ALERTS (ใหม่ใน v3.0)
-# 
-# ฟีเจอร์ที่ขอเพิ่ม "แจ้งเตือน" ทำเป็น 2 ชั้น:
-#   1. ในแอปเอง (ไม่ต้องตั้งค่าอะไรเพิ่ม) — เทียบสัญญาณของสแกนรอบนี้กับ
-#      สแกนรอบล่าสุดที่บันทึกไว้ (cache_store.load_last_signals) แล้วโชว์ว่า
-#      มีหุ้นไหนเพิ่ง "กลายเป็น Strong Buy / Breakout" ตั้งแต่รอบก่อน
-#   2. Telegram push (ออปชันแล้วแต่ผู้ใช้) — ถ้าตั้งค่า secrets
-#      TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID ไว้ใน .streamlit/secrets.toml
-#      ระบบจะส่งข้อความแจ้งเตือนออกไปด้วย ถ้าไม่ตั้งค่าไว้ ฟังก์ชันจะ no-op
-#      เงียบๆ ไม่ error และไม่บังคับให้ต้องมี Bot
+# v3.21: เดิมมีระบบแจ้งเตือน "สัญญาณใหม่" 2 ชั้น (ในแอป + Telegram push) ผูก
+# กับระบบ Signal (Strong Buy/Breakout) ที่ตัดออกทั้งระบบแล้วตามที่ตัดสินใจ
+# โฟกัสกลยุทธ์ทั้งเว็บไปที่แนวรับ (Support) แทน — ตัดออกทั้งหมด ไม่มีการ
+# แจ้งเตือน Telegram จากในแอปอีกต่อไป (Telegram แจ้งเตือน "Job ล้มเหลว" ใน
+# prefetch.yml ยังอยู่เหมือนเดิม เป็นคนละระบบ ไม่เกี่ยวกัน)
 from typing import Optional
 
 import pandas as pd
 import streamlit as st
 
-
-NOTABLE_SIGNALS = ("🔥 Strong Buy", "🚀 Breakout")
 
 # v3.10: จำกัดขนาดการสแกน "สด" (กดปุ่ม Run Screener) ไม่ให้ใหญ่เกินไป — เพราะ
 # Streamlit Community Cloud (free tier) รันทุก session บนโปรเซสเดียวกัน สแกนสด
@@ -2322,54 +2065,14 @@ NOTABLE_SIGNALS = ("🔥 Strong Buy", "🚀 Breakout")
 # จริงๆ ให้เป็นหน้าที่ของ GitHub Action ตอนกลางคืนแทน (คนละโปรเซส ไม่กระทบกัน)
 # v3.12: เดิมเลข version (เช่น "v3.8") เป็นแค่ข้อความ hardcode อยู่ใน HTML
 # header เท่านั้น ไม่มีที่อื่นในโค้ดอ้างอิงถึงเลย ทำให้ไม่มีทางรู้อัตโนมัติว่า
-# ข้อมูลที่ fetch_data.py เคยเซฟไว้ (latest_scan.json/alerts.json/snapshot)
-# มาจากโค้ด version ไหน — เวลาจะทำ forward-test เทียบผลสัญญาณย้อนหลัง ถ้ามี
-# การเปลี่ยน logic กลางทาง (เช่นรอบนี้ที่เปลี่ยนแนวรับเป็นรายสัปดาห์ + แก้บั๊ก
-# ตัดข้อมูลตามตัวอักษร) จะไม่มีทางแยกออกว่าข้อมูลไหน "ก่อน/หลัง" การเปลี่ยนนั้น
-# ตอนนี้ทำให้เป็นค่าคงที่จริงในโค้ด แล้ว fetch_data.py stamp ค่านี้ลงไปในทุก
-# ไฟล์ JSON ที่เซฟ (ดู fetch_data.py) เพื่อให้ข้อมูลในอนาคตกรองตาม version
-# ได้เอง ไม่ต้องจำเองว่า "อย่าเอาผลก่อนวันที่ X มาเทียบ"
-APP_VERSION = "3.19"
+# ข้อมูลที่ fetch_data.py เคยเซฟไว้ (latest_scan.json/snapshot) มาจากโค้ด
+# version ไหน — เวลาจะทำ forward-test เทียบผลย้อนหลัง ถ้ามีการเปลี่ยน logic
+# กลางทาง จะไม่มีทางแยกออกว่าข้อมูลไหน "ก่อน/หลัง" การเปลี่ยนนั้น ตอนนี้ทำให้
+# เป็นค่าคงที่จริงในโค้ด แล้ว fetch_data.py stamp ค่านี้ลงไปในทุกไฟล์ JSON
+# ที่เซฟ (ดู fetch_data.py) เพื่อให้ข้อมูลในอนาคตกรองตาม version ได้เอง
+APP_VERSION = "3.21"
 
 LIVE_SCAN_SAFETY_CAP = 100
-
-
-def detect_new_signals(current_df: pd.DataFrame, last_signals: dict) -> list:
-    """คืนรายการ dict {ticker, signal} ที่เพิ่งเปลี่ยนเป็นสัญญาณเด่น
-    (Strong Buy / Breakout) ตั้งแต่สแกนรอบล่าสุด"""
-    if current_df is None or current_df.empty or "Signal" not in current_df.columns:
-        return []
-    new_hits = []
-    for _, row in current_df.iterrows():
-        tk, sig = row.get("Ticker"), row.get("Signal")
-        if sig in NOTABLE_SIGNALS and last_signals.get(tk) != sig:
-            new_hits.append({"ticker": tk, "signal": sig})
-    return new_hits
-
-
-def signals_snapshot(df: pd.DataFrame) -> dict:
-    if df is None or df.empty or "Signal" not in df.columns:
-        return {}
-    return dict(zip(df["Ticker"], df["Signal"]))
-
-
-def maybe_notify_telegram(message: str) -> bool:
-    """ส่งข้อความผ่าน Telegram ถ้ามี secrets ตั้งไว้ — ไม่มีก็ไม่ทำอะไร (no-op)"""
-    try:
-        token = st.secrets.get("TELEGRAM_BOT_TOKEN")
-        chat_id = st.secrets.get("TELEGRAM_CHAT_ID")
-    except Exception:
-        return False
-    if not token or not chat_id:
-        return False
-    try:
-        import requests
-        url = f"https://api.telegram.org/bot{token}/sendMessage"
-        resp = requests.post(url, data={"chat_id": chat_id, "text": message}, timeout=8)
-        return resp.ok
-    except Exception as e:
-        log_err("maybe_notify_telegram", e)
-        return False
 
 
 # v3.5: เปลี่ยนจาก git commit ทุกวัน → เก็บไฟล์ที่ GitHub Release แทน
@@ -2378,7 +2081,6 @@ def maybe_notify_telegram(message: str) -> bool:
 # (public URL ไม่ต้องมี API key) ไม่ต้องพึ่งไฟล์ใน git เลย
 # (GITHUB_REPO/RELEASE_TAG ย้ายไปประกาศก่อน UNIVERSE_OPTIONS แล้ว — v3.17)
 PREFETCH_URL = f"https://github.com/{GITHUB_REPO}/releases/download/{RELEASE_TAG}/latest_scan.json"
-ALERTS_URL = f"https://github.com/{GITHUB_REPO}/releases/download/{RELEASE_TAG}/alerts.json"
 # v3.7: Sector Heatmap คำนวณไว้ล่วงหน้าตอน fetch_data.py รันแล้ว (ต่อจาก df
 # ที่สแกนเสร็จอยู่แล้วในตัว ไม่ยิง Yahoo เพิ่ม) แอปแค่อ่านไฟล์นี้ตรงๆ
 SECTOR_HEATMAP_URL = f"https://github.com/{GITHUB_REPO}/releases/download/{RELEASE_TAG}/sector_heatmap.json"
@@ -2387,7 +2089,6 @@ SECTOR_HEATMAP_URL = f"https://github.com/{GITHUB_REPO}/releases/download/{RELEA
 # ตรงๆ โดยไม่ผ่าน GitHub Action) — ตอน deploy จริงบน Streamlit Cloud จะไม่มี
 # ไฟล์นี้อยู่ในเครื่อง (เพราะไม่ได้ commit เข้า git แล้ว) จะใช้ทาง Release เสมอ
 PREFETCH_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "latest_scan.json")
-ALERTS_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "alerts.json")
 SECTOR_HEATMAP_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "sector_heatmap.json")
 
 
@@ -2420,27 +2121,6 @@ def load_prefetched_bundle():
     except Exception as e:
         log_err("load_prefetched_bundle(release)", e)
     return None, pd.DataFrame()
-
-
-@st.cache_data(ttl=300)
-def load_prefetch_alerts():
-    """อ่านสัญญาณใหม่ระหว่างรอบล่าสุดกับรอบก่อนหน้า ที่ fetch_data.py คำนวณ
-    ไว้แล้วครั้งเดียวตอนดึงข้อมูล (v3.5: ดึงจาก Release แทนไฟล์ local เหมือน
-    load_prefetched_bundle ด้านบน ด้วยเหตุผลเดียวกัน)"""
-    if os.path.exists(ALERTS_PATH):
-        try:
-            with open(ALERTS_PATH, "r", encoding="utf-8") as f:
-                return json.load(f).get("new_signals", [])
-        except Exception as e:
-            log_err("load_prefetch_alerts(local)", e)
-    try:
-        import requests
-        resp = requests.get(ALERTS_URL, timeout=15)
-        if resp.ok:
-            return resp.json().get("new_signals", [])
-    except Exception as e:
-        log_err("load_prefetch_alerts(release)", e)
-    return []
 
 
 @st.cache_data(ttl=3600)
@@ -2641,7 +2321,6 @@ def main():
 
     auto_loaded = False
     bundle_gen_at = None
-    new_signal_hits = []
 
     # ── Run screener (กดเอง = สแกนสดตอนนี้เลย ไม่รอรอบ prefetch ทุกวันหลังตลาดปิด) ──
     if run_btn:
@@ -2670,15 +2349,6 @@ def main():
         st.session_state.ran = True
         save_disk_cache(universe, tuple(live_tickers_use), period, interval, df)
 
-        # ── แจ้งเตือนสัญญาณใหม่ (เทียบกับสแกนสดของตัวเองรอบก่อน — แยกจากของ prefetch) ──
-        last_sig = load_last_signals(universe)
-        new_signal_hits = detect_new_signals(df, last_sig)
-        save_last_signals(universe, signals_snapshot(df))
-        if new_signal_hits:
-            msg = "🔔 สัญญาณใหม่ (" + universe + "): " + ", ".join(
-                f"{h['ticker']} {h['signal']}" for h in new_signal_hits[:20])
-            maybe_notify_telegram(msg)
-
     # ── ดีฟอลต์ (ไม่กด Run): อ่านจากข้อมูลที่ดึงไว้ล่วงหน้าทุกวันหลังตลาดปิด (v3.2 ใหม่) ──
     # เปลี่ยนจาก v3.0/3.1 ที่ต้องรอให้มีคนกด Run ก่อนถึงจะมีข้อมูล — ตอนนี้แอป
     # ไม่ได้ไปคุยกับ Yahoo ตอนคนเข้าดูเลย แค่อ่านไฟล์ที่ fetch_data.py
@@ -2699,7 +2369,6 @@ def main():
             st.session_state.dropped_tickers = dropped
             st.session_state.ran = True
             auto_loaded = True
-            new_signal_hits = load_prefetch_alerts()
         elif not st.session_state.ran:
             st.session_state.df = pd.DataFrame()
 
@@ -2739,46 +2408,19 @@ def main():
                 f'<span style="color:#5b7299;font-size:0.8rem;">{age_lbl} · {universe} · '
                 f'{len(df)} หุ้น · บันทึกแล้ว</span>'
                 f'</div>', unsafe_allow_html=True)
-
-        # ── แถบแจ้งเตือนสัญญาณใหม่ ──
-        if new_signal_hits:
-            chips = " ".join(
-                f'<span style="background:#16213a;border:1px solid #34f5a4;border-radius:6px;'
-                f'padding:3px 10px;font-size:0.78rem;margin-right:4px;">'
-                f'<b style="color:#34f5a4;">{h["ticker"]}</b> {h["signal"]}</span>'
-                for h in new_signal_hits[:25]
-            )
-            st.markdown(
-                f'<div style="background:#0a2530;border:1px solid #34f5a4;border-radius:8px;'
-                f'padding:10px 14px;margin-bottom:10px;">'
-                f'<div style="color:#34f5a4;font-weight:700;font-size:0.85rem;margin-bottom:6px;">'
-                f'🔔 สัญญาณใหม่ตั้งแต่สแกนล่าสุด ({len(new_signal_hits)} หุ้น)</div>'
-                f'<div>{chips}</div></div>', unsafe_allow_html=True)
     elif st.session_state.ran and df.empty and bundle_gen_at:
-        # v3.19: FIX จาก self-audit — ข้อความเดิมบอกให้กด Run Screener เสมอ
-        # แต่สำหรับ "Micro/Small Cap Value" (universe ที่คัดจาก Fundamental
-        # Score อัตโนมัติ ไม่ใช่รายชื่อคงที่) การกด Run Screener จะไม่ช่วย
-        # อะไรเลยถ้า curated_universes.json ยังไม่เคยถูกสร้าง (เช่น รอบแรกหลัง
-        # deploy ฟีเจอร์นี้) เพราะ resolve_tickers() จะได้ [] กลับมา สแกน 0
-        # ตัว — ต้องรอรอบ GitHub Action ถัดไปเท่านั้น กด Run Screener ไม่ช่วย
-        if "Top 100" in universe:
-            st.warning("⚠️ ยังไม่มีรายชื่อ Top 100 สำหรับ Universe นี้ — คัดจากผลสแกนของ GitHub Action "
-                      "รอบล่าสุดเท่านั้น (ไม่ใช่รายชื่อคงที่) ถ้าเพิ่งเปิดใช้ฟีเจอร์นี้ครั้งแรก ต้องรอ/สั่งรัน "
-                      "GitHub Action ให้เสร็จก่อน 1 รอบ กด Run Screener ที่นี่จะไม่ช่วยเพราะยังไม่มีรายชื่อให้สแกน")
-        else:
-            st.warning("⚠️ Universe นี้ยังไม่อยู่ในข้อมูลที่ดึงไว้ล่วงหน้า — กด 🚀 Run Screener "
-                      "เพื่อดึงสดสำหรับ Universe นี้แทน")
+        st.warning("⚠️ Universe นี้ยังไม่อยู่ในข้อมูลที่ดึงไว้ล่วงหน้า — กด 🚀 Run Screener "
+                  "เพื่อดึงสดสำหรับ Universe นี้แทน")
 
 
     # ── TABS ────────────────────────────────────────────────
-    tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
+    tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
         "📊 Dashboard | แดชบอร์ด",
         "💎 Hidden Gems | หุ้นซ่อนเร้น",
         "🔍 Deep Dive | เจาะลึกหุ้น",
         "📈 Backtester | ทดสอบย้อนหลัง",
         "🗺️ Sector Map | แผนผังกลุ่มหุ้น",
         "⭐ Watchlist | รายการเฝ้าดู",
-        "🔭 หุ้นน่าติดตาม | Top Candidates",
     ])
 
     # ════════════════════════════════════════════════════════
@@ -2799,66 +2441,55 @@ def main():
             total = len(df)
             bulls = len(df[df["Trend"].str.contains("Bull", na=False)])
             gems = len(df[df["💎 Gem"].str.contains("Gem", na=False)]) if "💎 Gem" in df else 0
-            breaks = len(df[df["Signal"].str.contains("Breakout|เบรคเอาท์", na=False)]) if "Signal" in df else 0
-            strong = len(df[df["Signal"].str.contains("Strong Buy", na=False)]) if "Signal" in df else 0
             at_support = len(df[df["Support"].str.contains("อยู่ที่แนวรับ", na=False)]) if "Support" in df else 0
+            near_support = len(df[df["Support"].str.contains("ใกล้แนวรับ", na=False)]) if "Support" in df else 0
             avg_rsi = df["RSI"].mean() if "RSI" in df else 0
 
+            # v3.21: ตัดการ์ด Strong Buy/Breakout ออก (มาจากระบบ Signal ที่
+            # ตัดทิ้งทั้งระบบแล้ว) เพิ่ม "ใกล้แนวรับ" แทน เพราะแนวรับเป็น
+            # แกนหลักของแอปนี้แล้ว
             cards = [
                 {"label": "สแกน", "value": total, "color": "#ffffff"},
                 {"label": "Bull Trend", "value": bulls, "color": "#34f5a4"},
-                {"label": "Strong Buy", "value": strong, "color": "#34f5a4"},
-                {"label": "Breakout", "value": breaks, "color": "#ffd76a"},
+                {"label": "อยู่ที่แนวรับ", "value": at_support, "color": "#34f5a4"},
+                {"label": "ใกล้แนวรับ", "value": near_support, "color": "#ffc857"},
                 {"label": "Hidden Gem", "value": gems, "color": "#ffd84d"},
-                {"label": "ที่แนวรับ", "value": at_support, "color": "#34f5a4"},
                 {"label": "Avg RSI", "value": round(float(avg_rsi), 1) if pd.notna(avg_rsi) else 0,
                  "color": "#5ee6ff", "decimals": 1},
             ]
             render_animated_metric_cards(cards)
 
-            # v3.18: สรุป "วันนี้ทำอะไรดี" — รวมข้อ 1 (สรุปเร็ว) + ข้อ 3
-            # (เทียบเมื่อวาน) เป็นข้อความสั้นๆ ไม่เพิ่มคอลัมน์/ตารางใหม่ ตาม
-            # หลัก "ไม่รกตา" ที่ขอไว้ — อ่านจบใน 5 วินาทีรู้ว่าต้องดูอะไรก่อน
+            # v3.21: สรุป "วันนี้ทำอะไรดี" — เดิมอิงจำนวน Strong Buy/สัญญาณใหม่
+            # (ระบบ Signal) ตอนนี้เปลี่ยนมาอิงแนวรับล้วนๆ ตามที่ตัดสินใจโฟกัส
+            # กลยุทธ์ทั้งเว็บไปที่แนวรับ — เทียบกับเมื่อวานด้วยสถานะแนวรับแทน
+            # สถานะ Signal เดิม
             summary_bits = []
-            if strong > 0:
-                summary_bits.append(f"🔥 {strong} ตัวเข้าเงื่อนไข Strong Buy")
-            if new_signal_hits:
-                summary_bits.append(f"🆕 {len(new_signal_hits)} สัญญาณใหม่จากเมื่อวาน")
+            if at_support > 0:
+                summary_bits.append(f"🟢 {at_support} ตัวอยู่ที่แนวรับตอนนี้")
             prev_date, prev_df = load_previous_snapshot()
-            if prev_date and not prev_df.empty and "Ticker" in prev_df.columns and "Signal" in prev_df.columns:
-                prio_map = {"🔥 Strong Buy": 0, "🚀 Breakout": 1, "📈 ขาขึ้น": 2,
-                           "⚠️ เฝ้าระวัง": 3, "🔄 Neutral": 4, "⏳ รอ Pullback": 5, "❌ ขาลง": 6}
-                today_sig = df.set_index("Ticker")["Signal"].map(prio_map)
-                prev_sig = prev_df.set_index("Ticker")["Signal"].map(prio_map)
-                common = today_sig.index.intersection(prev_sig.index)
+            if (prev_date and not prev_df.empty and "Ticker" in prev_df.columns
+                    and "Support" in prev_df.columns and "Support" in df.columns):
+                today_sup = df.set_index("Ticker")["Support"]
+                prev_sup = prev_df.set_index("Ticker")["Support"]
+                common = today_sup.index.intersection(prev_sup.index)
                 if len(common) > 0:
-                    improved = int((today_sig.loc[common] < prev_sig.loc[common]).sum())
-                    worsened = int((today_sig.loc[common] > prev_sig.loc[common]).sum())
-                    summary_bits.append(f"📊 เทียบกับ {prev_date}: {improved} ตัวสัญญาณดีขึ้น, {worsened} ตัวแย่ลง")
+                    newly_in = int(((today_sup.loc[common] == "🟢 อยู่ที่แนวรับ") &
+                                    (prev_sup.loc[common] != "🟢 อยู่ที่แนวรับ")).sum())
+                    newly_out = int(((today_sup.loc[common] != "🟢 อยู่ที่แนวรับ") &
+                                     (prev_sup.loc[common] == "🟢 อยู่ที่แนวรับ")).sum())
+                    summary_bits.append(f"📊 เทียบกับ {prev_date}: {newly_in} ตัวเพิ่งเข้าแนวรับใหม่, "
+                                        f"{newly_out} ตัวหลุดแนวรับไปแล้ว")
             if summary_bits:
                 st.info("  ·  ".join(summary_bits))
 
-            st.caption("⚠️ Signal / 💎 Gem / Accum เป็นการให้คะแนนตามเงื่อนไขเทคนิคัลที่ตั้งไว้เอง "
+            st.caption("⚠️ Support / 💎 Gem / Accum เป็นการให้คะแนนตามเงื่อนไขเทคนิคัลที่ตั้งไว้เอง "
                       "(RSI, Volume, MACD, EMA) **ยังไม่ผ่านการพิสูจน์ทางสถิติว่าทำนายผลตอบแทนได้จริง** "
-                      "ดูคอลัมน์ 'เหตุผล' เพื่อรู้ว่าทำไมได้ signal นี้ — ใช้เป็นจุดเริ่มต้นไปวิเคราะห์ต่อ ไม่ใช่คำแนะนำซื้อขาย")
+                      "ใช้เป็นจุดเริ่มต้นไปวิเคราะห์ต่อ ไม่ใช่คำแนะนำซื้อขาย")
 
-            with st.expander("📖 Signal แต่ละแบบหมายถึงอะไร"):
+            with st.expander("📖 แนวรับคำนวณจากอะไร"):
                 st.markdown("""
-| Signal | ความหมายคร่าวๆ |
-|---|---|
-| 🔥 Strong Buy | RSI ต่ำ + Volume สูง + MACD บวก + ราคาใกล้ EMA200 — เงื่อนไขเข้มที่สุด |
-| 🚀 Breakout | Volume พุ่งแรง + ราคายืนเหนือ EMA50 และ EMA200 |
-| 📈 ขาขึ้น | แนวโน้มขึ้นต่อเนื่อง EMA เรียงตัวสวย |
-| ⚠️ เฝ้าระวัง | ราคาแถว EMA200 แต่โมเมนตัม (MACD) เริ่มอ่อน |
-| ⏳ รอ Pullback | RSI สูงเกินไป มีโอกาสย่อตัวก่อน |
-| ❌ ขาลง / ⚠️ Oversold Bear | ราคาต่ำกว่า EMA200 — เทรนด์หลักเป็นขาลง |
-| 🔄 Neutral | ไม่เข้าเงื่อนไขข้อใดชัดเจน |
-
-ทุก signal คำนวณจาก threshold ที่ตั้งตามหลักการวิเคราะห์เทคนิคัลทั่วไป **ไม่ได้ backtest แยกทีละแบบ** ว่าให้ผลตอบแทนจริงดีกว่าสุ่มหรือไม่ (มีแค่กลยุทธ์ EMA Squeeze ใน tab Backtester ที่ทดสอบแล้วจริง)
-
----
 **🟢 Support (แนวรับ)** หาจาก 2 แหล่ง แล้วให้คะแนนความแข็งแกร่ง (Support Quality 0-10) จาก 4 ปัจจัย ก่อนเลือกแนวรับที่ "คุ้มจะดูที่สุด" — ไม่ใช่แค่ตัวที่ใกล้ราคาที่สุด:
-- **Swing Low** — จุดต่ำสุดในอดีต (180 วันล่าสุด) ที่ราคาเคยเด้งกลับขึ้นมาแล้วจริง
+- **Swing Low** — จุดต่ำสุดในอดีต (จากกราฟรายสัปดาห์) ที่ราคาเคยเด้งกลับขึ้นมาแล้วจริง
 - **EMA50 / EMA200** — เส้นค่าเฉลี่ยที่ราคามักเด้งกลับเมื่อแตะ
 
 **ปัจจัยให้คะแนน Support Quality:**
@@ -2871,26 +2502,27 @@ def main():
 
 **Support Quality ≥6/10** ถือว่าน่าสนใจเป็นพิเศษ (มีในส่วนขยายใต้ตารางหลัก) เพราะผ่านการทดสอบหลายปัจจัยพร้อมกัน
 
-⚠️ **คำเตือนสำคัญ:** แนวรับในอดีตไม่ได้การันตีว่าจะหยุดราคาได้อีกในอนาคต แม้ Quality Score จะสูงก็ตาม ถ้าหลุดแนวรับลงไปมักลงต่อแรง ควรมีจุดตัดขาดทุนเสมอ — ไปที่แท็บ **Backtester → Signal Accuracy** เพื่อดูหลักฐานจริงว่า "อยู่ที่แนวรับ" ในอดีตเด้งกลับขึ้นจริงกี่ % เทียบกับ Buy & Hold ก่อนตัดสินใจเชื่อ
+⚠️ **คำเตือนสำคัญ:** แนวรับในอดีตไม่ได้การันตีว่าจะหยุดราคาได้อีกในอนาคต แม้ Quality Score จะสูงก็ตาม ถ้าหลุดแนวรับลงไปมักลงต่อแรง ควรมีจุดตัดขาดทุนเสมอ — ไปที่แท็บ **Backtester → Support Accuracy** เพื่อดูหลักฐานจริงว่า "อยู่ที่แนวรับ" ในอดีตเด้งกลับขึ้นจริงกี่ % เทียบกับ Buy & Hold ก่อนตัดสินใจเชื่อ
                 """)
 
-            fc1, fc2, fc3, fc4 = st.columns(4)
+            fc1, fc2, fc3 = st.columns(3)
             with fc1:
-                sig_filter = st.multiselect("Signal | สัญญาณ", df["Signal"].unique().tolist() if "Signal" in df else [],
-                                            default=[], key="d_sig", placeholder="ทั้งหมด")
-            with fc2:
                 trend_filter = st.multiselect("Trend | แนวโน้ม", ["🟢 Bull", "🔴 Bear"],
                                               default=[], key="d_tr", placeholder="ทั้งหมด")
                 wk_filter = st.multiselect("Weekly Trend | แนวโน้มรายสัปดาห์ (ตัวกรองเสริม)",
                                            ["🟢 Weekly Bull", "🔴 Weekly Bear", "🟡 Weekly Mixed"],
                                            default=[], key="d_wk", placeholder="ทั้งหมด")
-            with fc3:
+            with fc2:
                 sq_filter = st.multiselect("Squeeze | การหดตัว", df["Squeeze"].unique().tolist() if "Squeeze" in df else [],
                                            default=[], key="d_sq", placeholder="ทั้งหมด")
-            with fc4:
+            with fc3:
+                # v3.21: pre-select "อยู่ที่แนวรับ"/"ใกล้แนวรับ" เป็นค่าเริ่มต้น
+                # — แนวรับเป็นแกนกลยุทธ์หลักของทั้งเว็บแล้ว ทำให้เป็นมุมมอง
+                # default ตอนเปิดแอป ยังเลือกดูทั้งหมดได้ถ้าอยากปิด filter นี้
                 sup_filter = st.multiselect("Support | แนวรับ",
                                             ["🟢 อยู่ที่แนวรับ", "🟡 ใกล้แนวรับ"],
-                                            default=[], key="d_sup", placeholder="ทั้งหมด")
+                                            default=["🟢 อยู่ที่แนวรับ", "🟡 ใกล้แนวรับ"],
+                                            key="d_sup", placeholder="ทั้งหมด")
                 res_filter = st.multiselect("Resistance | แนวต้าน",
                                             ["🔴 อยู่ที่แนวต้าน", "🟠 ใกล้แนวต้าน"],
                                             default=[], key="d_res", placeholder="ทั้งหมด")
@@ -2899,12 +2531,9 @@ def main():
                                      "Squeeze", "Support", "Support Zone", "Support Dist%",
                                      "Support Quality", "Support Touches",
                                      "Resistance", "Resistance Zone", "Resistance Dist%",
-                                     "Signal Age", "💎 Gem", "Accum", "RS 20D", "Signal",
-                                     "Signal Reason", "Stars"]
+                                     "Trend Age", "💎 Gem", "Accum", "RS 20D", "MktCap$B", "Stars"]
                          if c in df.columns]
             dfv = df[show_cols].copy()
-            if "Signal Reason" in dfv.columns:
-                dfv = dfv.rename(columns={"Signal Reason": "เหตุผล"})
             if "Support Dist%" in dfv.columns:
                 dfv["Support Dist%"] = dfv["Support Dist%"].apply(
                     lambda x: f"+{x:.1f}%" if pd.notna(x) else "—")
@@ -2918,12 +2547,11 @@ def main():
                 dfv["Resistance Dist%"] = dfv["Resistance Dist%"].apply(
                     lambda x: f"+{x:.1f}%" if pd.notna(x) else "—")
 
-            if "Signal Age" in dfv.columns:
-                dfv["Signal Age"] = dfv["Signal Age"].apply(
+            if "Trend Age" in dfv.columns:
+                dfv["Trend Age"] = dfv["Trend Age"].apply(
                     lambda x: f"{int(x)}d ago" if isinstance(x, (int, float)) and x >= 0 else "—")
 
             mask = pd.Series(True, index=dfv.index)
-            if sig_filter: mask &= df["Signal"].isin(sig_filter)
             if trend_filter: mask &= df["Trend"].apply(lambda x: any(t in str(x) for t in trend_filter))
             if wk_filter and "Weekly Trend" in df.columns:
                 mask &= df["Weekly Trend"].isin(wk_filter)
@@ -2936,34 +2564,25 @@ def main():
                 mask &= df["EMA Pattern"].apply(lambda x: any(p in str(x) for p in pat_filter))
             dfv = dfv[mask]
 
-            prio = {"🔥 Strong Buy": 0, "🚀 Breakout": 1, "📈 ขาขึ้น": 2,
-                    "⚠️ เฝ้าระวัง": 3, "🔄 Neutral": 4, "⏳ รอ Pullback": 5, "❌ ขาลง": 6}
-            if "Signal" in dfv.columns:
-                dfv["_p"] = dfv["Signal"].map(prio).fillna(7)
-            else:
-                dfv["_p"] = 7
-
-            # v3.16: เพิ่มการเรียงตาม "ใกล้แนวรับคุณภาพสูงสุด" เป็นตัวรอง — ไม่ได้
-            # เพิ่ม UI อะไรเลย (ไม่มีปุ่ม/checkbox ใหม่) แค่ทำให้ลำดับแถวที่เห็น
-            # อยู่แล้วช่วยตัดสินใจซื้อได้ดีขึ้นอัตโนมัติ: ภายใน Signal กลุ่ม
-            # เดียวกัน หุ้นที่ "อยู่ที่แนวรับ" มาก่อน "ใกล้แนวรับ" แล้วค่อยเรียง
-            # ตามคุณภาพแนวรับสูงสุด และระยะใกล้สุดตามลำดับ — ใช้ค่าดิบ (ตัวเลข
-            # จริง) จาก df ผ่าน index เพราะ dfv ถูกแปลงเป็น string แสดงผลไปแล้ว
+            # v3.21: เดิมเรียงตาม Signal priority ก่อน (Strong Buy/Breakout/...)
+            # แล้วค่อยเรียงตามแนวรับเป็นตัวรอง — ตอนนี้ตัด Signal ออกทั้งระบบ
+            # แล้ว เปลี่ยนมาเรียงตาม "อยู่ที่แนวรับก่อน ใกล้แนวรับรองลงมา"
+            # แล้วเรียงตาม "มูลค่าบริษัทมากไปน้อย" ตามที่ขอ (บริษัทใหญ่ก่อน
+            # ภายในกลุ่มแนวรับเดียวกัน) ใช้ค่าดิบจาก df ผ่าน index เพราะ dfv
+            # ถูกแปลงเป็น string แสดงผลไปแล้วบางคอลัมน์
             sup_tier_map = {"🟢 อยู่ที่แนวรับ": 0, "🟡 ใกล้แนวรับ": 1}
             if "Support" in df.columns:
                 dfv["_st"] = df.loc[dfv.index, "Support"].map(sup_tier_map).fillna(2)
             else:
                 dfv["_st"] = 2
+            dfv["_mc"] = -df.loc[dfv.index, "MktCap$B"].fillna(0) if "MktCap$B" in df.columns else 0
             dfv["_sq"] = -df.loc[dfv.index, "Support Quality"] if "Support Quality" in df.columns else 0
-            dfv["_sd"] = df.loc[dfv.index, "Support Dist%"].fillna(999) if "Support Dist%" in df.columns else 999
 
-            dfv = dfv.sort_values(["_p", "_st", "_sq", "_sd"]).drop(columns=["_p", "_st", "_sq", "_sd"])
+            dfv = dfv.sort_values(["_st", "_mc", "_sq"]).drop(columns=["_st", "_mc", "_sq"])
 
-            # v3.9: ลดคอลัมน์ที่ style จาก 9 เหลือ 4 (Signal/Support/Weekly Trend/Gem)
-            # — pandas Styler.map() วนลูป Python ทีละ cell ต่อคอลัมน์ ยิ่ง style
-            # เยอะยิ่งช้าเมื่อมีหลายร้อยแถว ตัดคอลัมน์ที่ไม่ใช่ตัวชี้วัดหลักออก
-            # (RSI/Squeeze/RS 20D/Accum/EMA Pattern ยังโชว์ค่าปกติ แค่ไม่มีสี)
-            smap = {"Signal": _sty_signal, "💎 Gem": _sty_gem,
+            # v3.9: ลดคอลัมน์ที่ style จาก 9 เหลือ 4 เดิม (Signal/Support/Weekly Trend/Gem)
+            # — v3.21 ตัด Signal ออก เหลือ Support/Resistance/Weekly Trend/Gem
+            smap = {"💎 Gem": _sty_gem,
                     "Support": _sty_support, "Resistance": _sty_resistance, "Weekly Trend": _sty_weekly}
             st.markdown(f"**{len(dfv)} หุ้นที่ตรงเงื่อนไข**")
             st.dataframe(make_table(dfv, smap), use_container_width=True, height=520)
@@ -3056,7 +2675,7 @@ def main():
             gem_show = [c for c in ["Ticker", "Price", "ราคาปิด", "💎 Gem", "Gem Score",
                                     "EMA Pattern", "Squeeze", "Accum", "Accum Score",
                                     "Support", "Support Dist%",
-                                    "RSI", "Vol×20D", "RS 20D", "Signal", "MktCap$B"] if c in df.columns]
+                                    "RSI", "Vol×20D", "RS 20D", "MktCap$B"] if c in df.columns]
             dfg = df[gem_show].copy()
             if "Support Dist%" in dfg.columns:
                 dfg["Support Dist%"] = dfg["Support Dist%"].apply(
@@ -3073,8 +2692,7 @@ def main():
                 dfg = dfg.sort_values("Gem Score", ascending=False)
 
             # v3.9: ลดคอลัมน์ที่ style เหมือนกับ Dashboard (เหตุผลเดียวกัน)
-            gsmap = {"💎 Gem": _sty_gem, "Gem Score": _sty_gs,
-                     "Signal": _sty_signal, "Support": _sty_support}
+            gsmap = {"💎 Gem": _sty_gem, "Gem Score": _sty_gs, "Support": _sty_support}
             st.markdown(f"**{len(dfg)} หุ้น**")
             st.dataframe(make_table(dfg, gsmap), use_container_width=True, height=540)
 
@@ -3130,10 +2748,8 @@ def main():
                 chg_col = "#34f5a4" if chg_pct >= 0 else "#ff3864"
                 chg_arr = "▲" if chg_pct >= 0 else "▼"
                 sq_now = row.get("Squeeze", "—")
-                age_now = row.get("Signal Age", -1)
+                age_now = row.get("Trend Age", -1)
                 age_str = f"{age_now}d ago" if isinstance(age_now, (int, float)) and age_now >= 0 else "—"
-                sig_now = row.get("Signal", "—")
-                sig_reason_now = row.get("Signal Reason", "")
                 rs20_now = row.get("RS 20D", np.nan)
                 sup_now = row.get("Support", "—")
                 sup_level_now = row.get("Support Level", np.nan)
@@ -3195,21 +2811,16 @@ def main():
                     f'{chg_arr} {chg_pct}%</span>'
                     f'<span style="color:#5b7299;font-size:0.82rem;">ปิด: '
                     f'<b style="color:#93a8c9;">${pc_now:,.2f}</b></span>'
-                    f'<span style="color:#5b7299;font-size:0.82rem;">Signal Age: '
+                    f'<span style="color:#5b7299;font-size:0.82rem;">ยืนเหนือ EMA200 มา: '
                     f'<b style="color:#ffd76a;">{age_str}</b></span>'
                     f'<span style="color:#5b7299;font-size:0.82rem;">Squeeze: '
                     f'<b style="color:#b66bff;">{sq_now}</b></span>'
                     f'<span style="color:#5b7299;font-size:0.82rem;">RS 20D: '
                     f'<b style="color:{"#34f5a4" if (rs20_now or 0) > 0 else "#ff3864"};">'
                     f'{rs20_now:.1f}%</b></span>'
-                    f'<span style="background:#16213a;border:1px solid #22344f;'
-                    f'border-radius:6px;padding:4px 12px;font-size:0.85rem;font-weight:700;">'
-                    f'{sig_now}</span>'
                     f'{sup_badge}'
                     f'{res_badge}'
                     f'</div>', unsafe_allow_html=True)
-                if sig_reason_now:
-                    st.caption(f"เหตุผล: {sig_reason_now}")
 
                 ema_info = [(5, "#93a8c9"), (10, "#93a8c9"), (20, "#ffd76a"),
                             (50, "#2de2e6"), (100, "#b66bff"), (200, "#ff3864")]
@@ -3595,41 +3206,29 @@ def main():
                         st.dataframe(make_table(tdf), use_container_width=True)
 
         st.markdown("---")
-        st.markdown("### 📊 Signal Accuracy — สัญญาณแต่ละแบบแม่นแค่ไหนจริงๆ")
-        st.caption("ย้อนดูประวัติหุ้นตัวอย่าง 50 ตัว (ผสมหุ้นใหญ่+เล็ก/กลาง) 2 ปี หาทุกจุดที่เคยได้ "
-                  "signal/แนวรับแต่ละแบบ แล้ววัดผลตอบแทนจริงใน 10/20 วันถัดไป — ใช้แทนการเชื่อ label เฉยๆ")
+        st.markdown("### 📊 Support Accuracy — แนวรับแม่นแค่ไหนจริงๆ")
+        st.caption("ย้อนดูประวัติหุ้นตัวอย่าง 50 ตัว (ผสมหุ้นใหญ่+เล็ก/กลาง) 2 ปี หาทุกจุดที่เคยเข้าเงื่อนไข "
+                  "แนวรับ แล้ววัดผลตอบแทนจริงใน 10/20 วันถัดไป — ใช้แทนการเชื่อ label เฉยๆ")
 
-        run_sig_bt = st.button("🔬 วิเคราะห์ Signal & Support Accuracy", key="sig_bt_run")
-        if run_sig_bt:
-            with st.spinner("กำลังย้อนวิเคราะห์ signal และแนวรับของหุ้นตัวอย่าง 50 ตัว (อาจใช้เวลา 2-3 นาที)…"):
-                sig_res = backtest_signal_accuracy()
-            st.session_state["sig_bt_res"] = sig_res
+        run_sup_bt = st.button("🔬 วิเคราะห์ Support Accuracy", key="sup_bt_run")
+        if run_sup_bt:
+            with st.spinner("กำลังย้อนวิเคราะห์แนวรับของหุ้นตัวอย่าง 50 ตัว (อาจใช้เวลา 2-3 นาที)…"):
+                sup_res = backtest_support_accuracy()
+            st.session_state["sup_bt_res"] = sup_res
 
-        if "sig_bt_res" in st.session_state:
-            sig_res = st.session_state["sig_bt_res"]
-            if "error" in sig_res:
-                st.error(f"❌ {sig_res['error']}")
+        if "sup_bt_res" in st.session_state:
+            sup_res = st.session_state["sup_bt_res"]
+            if "error" in sup_res:
+                st.error(f"❌ {sup_res['error']}")
             else:
-                st.caption(f"วิเคราะห์จากหุ้น {sig_res['n_tickers']} ตัว · พบจุดเปลี่ยน signal "
-                          f"{sig_res['n_events']} ครั้ง, จุดที่เข้าเงื่อนไขแนวรับ {sig_res.get('n_support_events', 0)} ครั้ง · "
+                st.caption(f"วิเคราะห์จากหุ้น {sup_res['n_tickers']} ตัว · พบจุดที่เข้าเงื่อนไขแนวรับ "
+                          f"{sup_res.get('n_support_events', 0)} ครั้ง · "
                           f"Buy & Hold เฉลี่ยของกลุ่มตัวอย่างช่วงเดียวกัน: "
-                          f"{sig_res['buy_hold_avg']:+.1f}%" if sig_res.get("buy_hold_avg") is not None else "")
+                          f"{sup_res['buy_hold_avg']:+.1f}%" if sup_res.get("buy_hold_avg") is not None else "")
 
-                sig_smap = {"Signal": _sty_signal, "ผลตอบแทนเฉลี่ย 10วัน%": _sty_rs,
-                           "ผลตอบแทนเฉลี่ย 20วัน%": _sty_rs, "Win Rate 10วัน%": _sty_wr,
-                           "Win Rate 20วัน%": _sty_wr, "ความเชื่อมั่น": _sty_confidence}
-
-                st.markdown("**🎯 Strategy Signal** (Strong Buy / Breakout / ขาขึ้น / ฯลฯ)")
-                sig_table = sig_res["table"]
-                if not sig_table.empty:
-                    st.dataframe(make_table(sig_table, sig_smap), use_container_width=True)
-                else:
-                    st.info("ไม่พบข้อมูล Strategy Signal ในช่วงทดสอบ")
-
-                st.markdown("**🟢 Support Level** (อยู่ที่แนวรับ / ใกล้แนวรับ)")
-                sup_table = sig_res.get("support_table", pd.DataFrame())
+                sup_table = sup_res.get("support_table", pd.DataFrame())
                 if not sup_table.empty:
-                    sup_smap = {"Signal": _sty_support, "ผลตอบแทนเฉลี่ย 10วัน%": _sty_rs,
+                    sup_smap = {"Support": _sty_support, "ผลตอบแทนเฉลี่ย 10วัน%": _sty_rs,
                                "ผลตอบแทนเฉลี่ย 20วัน%": _sty_rs, "Win Rate 10วัน%": _sty_wr,
                                "Win Rate 20วัน%": _sty_wr, "ความเชื่อมั่น": _sty_confidence}
                     st.dataframe(make_table(sup_table, sup_smap), use_container_width=True)
@@ -3640,7 +3239,7 @@ def main():
                     st.info("ไม่พบข้อมูล Support ในช่วงทดสอบ — อาจเป็นเพราะหุ้นตัวอย่างไม่ค่อยมีจังหวะใกล้แนวรับในช่วงนี้")
 
                 with st.expander("⚠️ ข้อจำกัดของผลทดสอบนี้ (อ่านก่อนเชื่อตัวเลข)"):
-                    st.caption(sig_res["notes"])
+                    st.caption(sup_res["notes"])
 
     # ════════════════════════════════════════════════════════
     # TAB 5: SECTOR MAP
@@ -3767,18 +3366,15 @@ def main():
             if "wl_df" in st.session_state and not st.session_state["wl_df"].empty:
                 wdf = st.session_state["wl_df"]
                 wl_show = [c for c in ["Ticker", "Price", "Trend", "Weekly Trend", "RSI", "EMA Pattern", "Squeeze",
-                                       "Signal Age", "💎 Gem", "Accum", "RS 20D", "Signal", "Signal Reason",
+                                       "Trend Age", "💎 Gem", "Accum", "RS 20D",
                                        "YTD%", "Drawdown%"]
                            if c in wdf.columns]
                 wdf = wdf.copy()
-                if "Signal Age" in wdf.columns:
-                    wdf["Signal Age"] = wdf["Signal Age"].apply(
+                if "Trend Age" in wdf.columns:
+                    wdf["Trend Age"] = wdf["Trend Age"].apply(
                         lambda x: f"{int(x)}d ago" if isinstance(x, (int, float)) and x >= 0 else "—")
-                if "Signal Reason" in wdf.columns:
-                    wdf = wdf.rename(columns={"Signal Reason": "เหตุผล"})
-                    wl_show = [("เหตุผล" if c == "Signal Reason" else c) for c in wl_show]
-                wsmap = {"Signal": _sty_signal, "💎 Gem": _sty_gem, "RSI": _sty_rsi,
-                         "Squeeze": _sty_squeeze, "RS 20D": _sty_rs, "Accum": _sty_signal,
+                wsmap = {"💎 Gem": _sty_gem, "RSI": _sty_rsi,
+                         "Squeeze": _sty_squeeze, "RS 20D": _sty_rs, "Accum": _sty_generic,
                          "Weekly Trend": _sty_weekly}
                 st.dataframe(make_table(wdf[wl_show], wsmap),
                              use_container_width=True, height=400)
@@ -3797,82 +3393,6 @@ def main():
                         bt_df = pd.DataFrame(bt_rows)
                         st.dataframe(make_table(bt_df, {"Win%": _sty_wr, "Avg Ret%": _sty_rs, "vs Buy&Hold%": _sty_rs}),
                                      use_container_width=True)
-
-    # ════════════════════════════════════════════════════════
-    # TAB 7: หุ้นน่าติดตาม (TOP CANDIDATES) — v3.17
-    # ════════════════════════════════════════════════════════
-    with tab7:
-        st.markdown("### 🔭 หุ้นน่าติดตาม")
-        st.caption("รวมเทคนิคัล (Gem Score) + ปัจจัยพื้นฐาน (Fundamental Score) + แนวรับ + เทรนด์รายสัปดาห์ "
-                  "เข้าด้วยกัน — หุ้นที่เข้าเงื่อนไขพร้อมกันหลายอย่างจะขึ้นมาก่อน")
-        st.warning("⚠️ **ไม่ใช่คำแนะนำการลงทุน** — เป็นคะแนนรวมจากเงื่อนไขทางเทคนิคัล/พื้นฐานที่ตั้งเอง "
-                  "(heuristic) ยังไม่ผ่านการพิสูจน์ทางสถิติว่าทำนายผลตอบแทนได้จริง โดยเฉพาะ Fundamental "
-                  "Score ที่หุ้นเล็ก/ไมโครแคปหลายตัวข้อมูลนักวิเคราะห์ไม่ครบ อาจได้คะแนนต่ำกว่าจริงเพราะ "
-                  "\"ข้อมูลหาย\" ไม่ใช่เพราะพื้นฐานแย่ ใช้เป็นจุดเริ่มต้นไปวิเคราะห์ต่อเท่านั้น")
-
-        if df.empty:
-            st.info("ยังไม่มีข้อมูล — เลือก Universe ที่มีข้อมูลก่อน (ดู Dashboard tab)")
-        else:
-            req_cols = {"Gem Score", "Fundamental Score"}
-            if not req_cols.issubset(df.columns):
-                st.info("Universe นี้ยังไม่มีข้อมูล Fundamental Score ครบ (อาจเป็นข้อมูลจากรอบ prefetch "
-                       "เก่าก่อนมีฟีเจอร์นี้) — ลอง Run Screener สแกนสด หรือรอรอบ prefetch ถัดไป")
-            else:
-                # v3.19: FIX จาก self-audit — เดิม .iterrows() วนทั้ง df (อาจ
-                # ถึง 2,000 แถวสำหรับ universe ใหญ่) ทุกครั้งที่มีอะไรเปลี่ยน
-                # แล้ว "ทุกครั้ง" หมายถึงจริงๆ เพราะ st.tabs() รันทุกแท็บทุก
-                # rerun ไม่ใช่แค่แท็บที่เปิดอยู่ (จุดที่เคยคุยกันไว้เรื่อง
-                # performance) — วิธีแก้: คำนวณคะแนนแบบ vectorized (เร็ว) ก่อน
-                # เพื่อหา Top 30 แล้วค่อยทำ per-row reason string (ช้ากว่า)
-                # เฉพาะ 30 แถวสุดท้ายเท่านั้น ไม่ว่า universe จะใหญ่แค่ไหน
-                # ต้นทุนก็คงที่เสมอ
-                gs = pd.to_numeric(df.get("Gem Score"), errors="coerce").fillna(0)
-                fs = pd.to_numeric(df.get("Fundamental Score"), errors="coerce").fillna(0)
-                fast_score = gs * 0.35 + fs * 0.35
-                if "Support" in df.columns:
-                    sup_s = df["Support"].astype(str)
-                    fast_score = fast_score + np.where(sup_s.str.contains("อยู่ที่แนวรับ", na=False), 1.5,
-                                             np.where(sup_s.str.contains("ใกล้แนวรับ", na=False), 0.7, 0.0))
-                if "Weekly Trend" in df.columns:
-                    wk_s = df["Weekly Trend"].astype(str)
-                    fast_score = fast_score + np.where(wk_s.str.contains("Weekly Bull", na=False), 1.0, 0.0)
-                if "Analyst Upside%" in df.columns:
-                    up_s = pd.to_numeric(df["Analyst Upside%"], errors="coerce")
-                    fast_score = fast_score + np.where(up_s > 15, 0.8, 0.0)
-                fast_score = fast_score.clip(lower=0, upper=10).round(1)
-
-                top30_idx = fast_score[fast_score > 0].sort_values(ascending=False).head(30).index
-                watch_rows = []
-                for _, r in df.loc[top30_idx].iterrows():  # ≤30 แถวเสมอ ไม่ว่า universe ใหญ่แค่ไหน
-                    ws, wr = compute_watch_score(r.to_dict())
-                    watch_rows.append({
-                        "Ticker": r.get("Ticker"), "Price": r.get("Price"),
-                        "Watch Score": ws, "เหตุผล": " · ".join(wr) if wr else "—",
-                        "Gem Score": r.get("Gem Score"), "Fundamental Score": r.get("Fundamental Score"),
-                        "Support": r.get("Support"), "Support Zone": r.get("Support Zone"),
-                        "Weekly Trend": r.get("Weekly Trend"), "Signal": r.get("Signal"),
-                        "Analyst Rec": r.get("Analyst Rec"), "Analyst Upside%": r.get("Analyst Upside%"),
-                    })
-                watch_df = pd.DataFrame(watch_rows).sort_values("Watch Score", ascending=False) if watch_rows else pd.DataFrame()
-
-                if watch_df.empty:
-                    st.info("ไม่พบหุ้นที่เข้าเงื่อนไขใน Universe ปัจจุบัน ลองเปลี่ยน Universe หรือ Sector")
-                else:
-                    st.markdown(f"**Top {len(watch_df)} หุ้นที่คะแนนรวมสูงสุด**")
-                    wsmap2 = {"Signal": _sty_signal, "Support": _sty_support, "Weekly Trend": _sty_weekly}
-                    st.dataframe(make_table(watch_df, wsmap2), use_container_width=True, height=560)
-
-                    with st.expander("📖 Watch Score คำนวณจากอะไร"):
-                        st.markdown("""
-- **Gem Score × 0.35** — เทคนิคัล: EMA สวย + สะสมเงียบ + Volume/RSI เหมาะสม
-- **Fundamental Score × 0.35** — Growth + Profitability + Valuation + มุมมองนักวิเคราะห์
-- **+1.5** ถ้าอยู่ที่แนวรับคุณภาพสูง / **+0.7** ถ้าใกล้แนวรับ
-- **+1.0** ถ้าเทรนด์รายสัปดาห์เป็นขาขึ้น (Weekly Bull)
-- **+0.8** ถ้าราคาเป้าหมายนักวิเคราะห์สูงกว่าราคาปัจจุบัน >15%
-
-คะแนนเต็ม 10 — ดูคอลัมน์ "เหตุผล" เพื่อรู้ว่าหุ้นตัวนั้นเข้าเงื่อนไขไหนบ้าง
-ไม่ใช่ตัวเลขเดียวที่เชื่อไม่ได้ว่ามาจากไหน
-                        """)
 
 
 if __name__ == "__main__":
