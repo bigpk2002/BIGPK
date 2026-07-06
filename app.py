@@ -748,7 +748,7 @@ def resample_weekly_ohlc(df: pd.DataFrame) -> pd.DataFrame:
         return pd.DataFrame()
 
 
-def support_status(price: float, df: pd.DataFrame, e50: float, e200: float) -> dict:
+def support_status(price: float, df: pd.DataFrame, e50: float, e200: float, rs20: float = np.nan) -> dict:
     """
     v3.7 — อัปเกรดใหญ่จากเวอร์ชันเดิม: เดิมเลือกแนวรับที่ใกล้ราคาที่สุดเสมอ
     (อาจเป็นแนวรับอ่อนๆที่บังเอิญอยู่ใกล้) ตอนนี้ให้คะแนนความแข็งแกร่ง
@@ -758,9 +758,10 @@ def support_status(price: float, df: pd.DataFrame, e50: float, e200: float) -> d
     ปัจจัยที่ให้คะแนน:
       1. Touch count — โดนทดสอบกี่ครั้ง (ยิ่งเยอะยิ่งน่าเชื่อ ปกป้องราคาซ้ำๆ)
       2. Volume confirmation — มีแรงซื้อจริงตอนเด้งกลับไหม
-      3. Confluence — Swing Low ตรงกับ EMA50/EMA200 พอดีไหม (แนวรับซ้อนกัน
-         จากคนละวิธีคำนวณ มาบรรจบที่จุดเดียวกัน = สัญญาณที่หนักแน่นกว่ามาก)
+      3. Confluence — Swing Low ตรงกับ EMA50/EMA200/แนวต้านเก่าพอดีไหม
+         (แนวรับซ้อนกันจากคนละวิธีคำนวณ มาบรรจบที่จุดเดียวกัน = หนักแน่นกว่า)
       4. ระยะห่างจากราคาปัจจุบัน — ต้องใกล้พอจะมีความหมายตอนนี้
+      5. Relative Strength (v3.24) — หุ้นแข็งกว่าตลาดได้โบนัสเล็กน้อย
 
     v3.8: swing low หา "แนวรับ" (Swing Low) เปลี่ยนมาใช้แท่ง**รายสัปดาห์**
     แทนรายวัน (ตามที่ขอ) — resample เป็นรายสัปดาห์ก่อนหาสวิงโลว์ ยังไม่ยิง
@@ -773,6 +774,17 @@ def support_status(price: float, df: pd.DataFrame, e50: float, e200: float) -> d
     จากหลายจุด (touches) จะโชว์เป็นช่วง (เช่น "60.20–65.40") จากค่าต่ำสุด-สูงสุด
     ของกลุ่มนั้นจริงๆ ถ้ามาจาก EMA50/EMA200 (เป็นเส้นเดียว ไม่ใช่กลุ่ม) จะโชว์
     เป็นจุดเดียวตามเดิม
+
+    v3.24: เพิ่ม 2 แหล่งข้อมูล/ปัจจัยจากการวิเคราะห์ทบทวนอัลกอริทึม:
+      - **Polarity Principle** — จุดที่เคยเป็น "แนวต้าน" ในอดีต (swing high)
+        แล้วราคาทะลุขึ้นไปแล้ว มักกลายเป็นแนวรับเมื่อราคาย่อกลับมา (หลักการ
+        TA ที่มีการันตีจากตำราหลายเล่ม ไม่ใช่การเดา) — ใช้ find_resistance_levels()
+        ที่มีอยู่แล้ว หาจุดที่เคยเป็นแนวต้านแต่ตอนนี้อยู่ต่ำกว่าราคาปัจจุบัน
+        เพิ่มเป็นแหล่งแนวรับที่ 3 (นอกจาก Swing Low และ EMA)
+      - **RS Modifier** — หุ้นที่แข็งกว่าตลาด (RS 20D เป็นบวก) แล้วมาอยู่ที่
+        แนวรับ น่าเชื่อกว่าหุ้นที่อ่อนกว่าตลาดมาก เพราะถ้าตลาดรวมร่วง แนวรับ
+        จะพังง่ายกว่าไม่ว่าเทคนิคัลจะดูดีแค่ไหน — ให้โบนัส/หักคะแนนเล็กน้อย
+        (ไม่ให้มีน้ำหนักเกิน 1 แต้ม เพราะเป็นแค่ตัวปรับ ไม่ใช่ปัจจัยหลัก)
 
     คืนค่า dict: {status, level, distance_pct, quality_score, touch_count,
                   volume_confirmed, confluence, zone_low, zone_high, zone_label}
@@ -790,6 +802,16 @@ def support_status(price: float, df: pd.DataFrame, e50: float, e200: float) -> d
                                "zone_low": sw["zone_low"], "zone_high": sw["zone_high"],
                                "touch_count": sw["touch_count"],
                                "vol_ratio": sw["avg_bounce_volume_ratio"]})
+    # v3.24 Polarity Principle: แนวต้านเก่าที่ราคาทะลุขึ้นไปแล้ว มักกลายเป็น
+    # แนวรับ — หาจาก find_resistance_levels() ตัวเดิม กรองเอาเฉพาะจุดที่อยู่
+    # ต่ำกว่าราคาปัจจุบันแล้ว (แปลว่าทะลุขึ้นมาแล้วจริง ไม่ใช่แนวต้านที่ยังไม่โดนทะลุ)
+    old_resistance = find_resistance_levels(weekly_df, lookback=52, swing_window=2, min_bars=14)
+    for r in old_resistance:
+        if r["level"] <= price:
+            candidates.append({"source": "Old Resistance (Polarity)", "level": r["level"],
+                               "zone_low": r["zone_low"], "zone_high": r["zone_high"],
+                               "touch_count": r["touch_count"],
+                               "vol_ratio": r["avg_bounce_volume_ratio"]})
     if e50 > 0 and e50 <= price:
         candidates.append({"source": "EMA50", "level": e50, "zone_low": e50, "zone_high": e50,
                            "touch_count": 1, "vol_ratio": 1.0})
@@ -802,6 +824,17 @@ def support_status(price: float, df: pd.DataFrame, e50: float, e200: float) -> d
 
     # คำนวณคะแนนความแข็งแกร่งของแนวรับแต่ละตัว แล้วเลือกตัวที่ดีที่สุด
     # (ไม่ใช่แค่ใกล้สุด — แนวรับใกล้แต่อ่อนอาจแพ้แนวรับไกลกว่านิดหน่อยแต่แข็งแรงกว่ามาก)
+    rs_bonus = 0.0
+    if pd.notna(rs20):
+        if rs20 > 5:
+            rs_bonus = 1.0
+        elif rs20 > 0:
+            rs_bonus = 0.5
+        elif rs20 < -10:
+            rs_bonus = -1.0
+        elif rs20 < -5:
+            rs_bonus = -0.5
+
     scored = []
     for c in candidates:
         dist = (price - c["level"]) / c["level"] * 100
@@ -816,9 +849,9 @@ def support_status(price: float, df: pd.DataFrame, e50: float, e200: float) -> d
         volume_score = 2.0 if c["vol_ratio"] >= 1.3 else (1.0 if c["vol_ratio"] >= 1.0 else 0)
         confluence_score = 2.0 if confluence else 0
         proximity_score = max(0, 1.0 - dist / 6.0)              # ใกล้กว่า = คะแนนเพิ่มเล็กน้อย
-        quality = round(touch_score + volume_score + confluence_score + proximity_score, 1)
+        quality = round(touch_score + volume_score + confluence_score + proximity_score + rs_bonus, 1)
         scored.append({**c, "distance_pct": round(dist, 2), "confluence": confluence,
-                       "quality_score": min(quality, 10.0)})
+                       "quality_score": max(0, min(quality, 10.0))})
 
     if not scored:
         return empty
@@ -1204,10 +1237,11 @@ def analyze(ticker: str, period: str = "1y", interval: str = "1d", bench_tuple=N
         acc_sc, acc_lb = quiet_accumulation(vl, cl, rsi_val)
         sq_lbl, bw_now, bw_delta = squeeze_direction(cl)
         age = signal_age(cl)  # จำนวนวันตั้งแต่ราคาข้าม EMA200 ขึ้นมา (ไม่เกี่ยวกับระบบ Signal ที่ตัดออกแล้ว)
-        sup = support_status(px, df, ep[50], ep[200])
-        res = resistance_status(px, df, ep[50], ep[200])
         wk_trend, wk_chg = weekly_trend(df)
 
+        # v3.24: ย้าย RS มาคำนวณ "ก่อน" support_status()/resistance_status()
+        # เพราะตอนนี้ support_status() รับ rs20 เข้าไปปรับคะแนน Support Quality
+        # ด้วย (ดูเหตุผลใน docstring ของ support_status) — เดิมคำนวณทีหลัง
         rs20 = rs50 = np.nan
         if bench_tuple:
             dates, vals = zip(*bench_tuple)
@@ -1215,6 +1249,8 @@ def analyze(ticker: str, period: str = "1y", interval: str = "1d", bench_tuple=N
             rs20 = relative_strength(cl, bench, 20)
             rs50 = relative_strength(cl, bench, 50)
 
+        sup = support_status(px, df, ep[50], ep[200], rs20=rs20)
+        res = resistance_status(px, df, ep[50], ep[200])
         fnd = _cached_fundamentals(ticker)
         gs, gl = gem_score(ep_sc, acc_sc, vm20 or 0, rsi_val, draw or 0, fnd["mktcap_b"])
 
@@ -1465,6 +1501,16 @@ def _support_history_for_ticker(ticker: str) -> pd.DataFrame:
     ที่ตอบโจทย์ตรงๆว่า "แนวรับที่หาไว้ใช้ได้จริงแค่ไหน" — คำนวณ Support
     status ของทุกวันในอดีต (2 ปี) ของหุ้นตัวเดียว + ผลตอบแทนจริงในอีก 10/20
     วันถัดไปจากจุดนั้น (ใช้ข้อมูลถึงวันนั้นเท่านั้น ไม่มี lookahead)
+
+    v3.24: เพิ่มบันทึก touch_count/volume_confirmed/confluence ต่อเหตุการณ์
+    (ข้อ 1 จากการวิเคราะห์ทบทวนอัลกอริทึม) — เดิมน้ำหนักคะแนนใน
+    support_status() (touch×1.5, volume 2, confluence 2, proximity 1) เป็น
+    ตัวเลขที่ตั้งเอง ไม่เคยพิสูจน์ว่าปัจจัยไหนจริงๆทำนายการเด้งกลับได้ดีกว่า
+    กัน — เก็บ field พวกนี้ไว้ให้ backtest_support_accuracy() เอาไปแยกดูทีละ
+    ปัจจัยได้ว่าอันไหนมีผลจริง อันไหนไม่ค่อยมีผล (ดูตาราง breakdown ในแท็บ
+    Backtester) หมายเหตุ: ไม่ได้ส่ง rs20 เข้ามาที่นี่ (ต้องมี benchmark series
+    เพิ่ม จะทำให้ backtest ช้าลงอีกมาก) แปลว่า Support Quality ในการ backtest
+    นี้เป็นเวอร์ชัน "ไม่รวม RS bonus" ต่างจากตอนใช้งานจริงในแอปเล็กน้อย
     """
     try:
         df = _download_2y(ticker)
@@ -1487,6 +1533,9 @@ def _support_history_for_ticker(ticker: str) -> pd.DataFrame:
                         "ticker": ticker, "signal": sup_sig, "kind": "support",
                         "fwd10": round((cl.iloc[i + 10] - px) / px * 100, 2),
                         "fwd20": round((cl.iloc[i + 20] - px) / px * 100, 2),
+                        "touch_count": sup.get("touch_count", 0),
+                        "volume_confirmed": sup.get("volume_confirmed", False),
+                        "confluence": sup.get("confluence", False),
                     })
                 prev_sup = sup_sig
         return pd.DataFrame(rows)
@@ -1529,8 +1578,20 @@ def backtest_support_accuracy(sample: tuple = SUPPORT_BACKTEST_SAMPLE) -> dict:
     full = pd.concat(all_dfs, ignore_index=True)
 
     def _aggregate(sub: pd.DataFrame) -> pd.DataFrame:
+        # v3.24 BUG FIX (พบระหว่างทดสอบฟีเจอร์ใหม่): เดิม "จำนวนครั้ง=(...)"
+        # เขียนเป็น bare keyword argument ตรงๆ — Python จะทำ NFKC normalization
+        # กับ "ชื่อ keyword argument" ที่เป็นตัวอักษรถูกต้องตามหลัก identifier
+        # โดยอัตโนมัติตอน parse (คนละเรื่องกับ string literal ธรรมดาที่ไม่ถูก
+        # normalize) ทำให้ "ำ" (SARA AM ตัวเดียว U+0E33) ถูกแปลงเป็นรูป
+        # decompose (นิคหิต+สระอา 2 ตัวอักษร) กลายเป็นคนละ string กับตอนใช้
+        # "จำนวนครั้ง" เป็น string literal ธรรมดาตอน index `agg["จำนวนครั้ง"]"`
+        # ด้านล่าง — เกิด KeyError จริง (เจอตอนทดสอบเพิ่ม factor_table ใหม่
+        # ทั้งที่โค้ดจุดนี้ไม่ได้แก้มานานแล้ว แปลว่าบั๊กนี้อาจซ่อนอยู่ตั้งแต่
+        # ตอนแรกที่เขียน แค่ไม่มีใครกดปุ่มนี้ด้วย pandas version ที่โดนบั๊กพอดี)
+        # แก้โดยเปลี่ยนมาใช้ **{"...": (...)} แบบเดียวกับคอลัมน์อื่นทั้งหมด
+        # (unpack จาก dict ตอน runtime ไม่ผ่าน identifier normalization เลย)
         agg = sub.groupby("signal").agg(
-            จำนวนครั้ง=("signal", "count"),
+            **{"จำนวนครั้ง": ("signal", "count")},
             **{"ผลตอบแทนเฉลี่ย 10วัน%": ("fwd10", "mean")},
             **{"Win Rate 10วัน%": ("fwd10", lambda x: round((x > 0).mean() * 100, 1))},
             **{"ผลตอบแทนเฉลี่ย 20วัน%": ("fwd20", "mean")},
@@ -1540,6 +1601,33 @@ def backtest_support_accuracy(sample: tuple = SUPPORT_BACKTEST_SAMPLE) -> dict:
         return agg.sort_values("ผลตอบแทนเฉลี่ย 20วัน%", ascending=False)
 
     sup_table = _aggregate(full) if not full.empty else pd.DataFrame()
+
+    # v3.24 ข้อ 1: แยกวิเคราะห์ทีละปัจจัย (touch count / volume / confluence)
+    # ว่าอันไหนจริงๆทำนายการเด้งกลับได้ดีกว่ากัน — แทนที่จะเชื่อน้ำหนักที่ตั้ง
+    # เองใน support_status() เฉยๆ ใช้ข้อมูลจริงจากหุ้นตัวอย่างมาตรวจสอบ
+    def _factor_row(label: str, mask: pd.Series) -> dict:
+        sub = full[mask]
+        if sub.empty:
+            return {"ปัจจัย": label, "จำนวนครั้ง": 0, "ผลตอบแทนเฉลี่ย 20วัน%": None,
+                   "Win Rate 20วัน%": None, "ความเชื่อมั่น": "⚠️ ไม่มีข้อมูล"}
+        return {
+            "ปัจจัย": label, "จำนวนครั้ง": len(sub),
+            "ผลตอบแทนเฉลี่ย 20วัน%": round(sub["fwd20"].mean(), 2),
+            "Win Rate 20วัน%": round((sub["fwd20"] > 0).mean() * 100, 1),
+            "ความเชื่อมั่น": _confidence_flag(len(sub)),
+        }
+
+    factor_rows = []
+    if "touch_count" in full.columns:
+        factor_rows.append(_factor_row("Touch Count ≥3", full["touch_count"] >= 3))
+        factor_rows.append(_factor_row("Touch Count <3", full["touch_count"] < 3))
+    if "volume_confirmed" in full.columns:
+        factor_rows.append(_factor_row("Volume ยืนยัน", full["volume_confirmed"] == True))
+        factor_rows.append(_factor_row("Volume ไม่ยืนยัน", full["volume_confirmed"] == False))
+    if "confluence" in full.columns:
+        factor_rows.append(_factor_row("มี Confluence", full["confluence"] == True))
+        factor_rows.append(_factor_row("ไม่มี Confluence", full["confluence"] == False))
+    factor_table = pd.DataFrame(factor_rows)
 
     # Buy & Hold เฉลี่ยของหุ้นตัวอย่างทั้งหมดในช่วงเดียวกัน เอาไว้เทียบบรรทัดฐาน
     bh_rets = []
@@ -1552,7 +1640,7 @@ def backtest_support_accuracy(sample: tuple = SUPPORT_BACKTEST_SAMPLE) -> dict:
             pass
     bh_avg = round(float(np.mean(bh_rets)), 2) if bh_rets else None
 
-    return {"support_table": sup_table,
+    return {"support_table": sup_table, "factor_table": factor_table,
             "n_tickers": len(all_dfs), "n_support_events": len(full),
             "buy_hold_avg": bh_avg, "notes": SUPPORT_BACKTEST_NOTES}
 
@@ -1806,6 +1894,27 @@ def _sty_support(v):
     return "color:#5b7299;"
 
 
+def _row_highlight_support(row):
+    """
+    v3.23: ไฮไลต์ทั้งแถวเป็นแถบสี (ไม่ใช่แค่ตัวหนังสือในคอลัมน์ Support
+    คอลัมน์เดียว) ให้เห็นชัดเจนกว่าเดิมว่าหุ้นตัวไหน "เข้าเงื่อนไข" อยู่ที่
+    แนวรับจริงๆ ใช้สีชุดเดียวกับที่ย้อม text คอลัมน์ Support อยู่แล้ว
+    (เขียว/เหลือง — เข้ากับธีมเว็บ) แค่ทำให้จางลงมากเพื่อไม่ให้ตัวหนังสือ
+    อ่านยาก (ความทึบ ~0.08-0.10 เท่านั้น)
+
+    เงื่อนไข 2 ระดับ:
+      🟢 อยู่ที่แนวรับ (ห่างราคา ≤1.5%) → แถบเขียวอ่อน
+      🟡 ใกล้แนวรับ (ห่างราคา 1.5-4%)  → แถบเหลืองอ่อน
+    ไม่เข้าเงื่อนไขทั้งสอง → ไม่มีแถบสี (พื้นหลังปกติ)
+    """
+    sup = str(row.get("Support", ""))
+    if "อยู่ที่แนวรับ" in sup:
+        return ["background-color: rgba(52,245,164,0.10);"] * len(row)
+    if "ใกล้แนวรับ" in sup:
+        return ["background-color: rgba(255,200,87,0.08);"] * len(row)
+    return [""] * len(row)
+
+
 def _sty_resistance(v):
     v = str(v)
     if "อยู่ที่แนวต้าน" in v: return "color:#ff3864;font-weight:800;"
@@ -1868,9 +1977,14 @@ HDR_TBL = [{"selector": "th", "props": [
 ]}]
 
 
-def make_table(df, style_map: dict = None) -> object:
-    """Apply consistent dark styling + optional column-level styling."""
+def make_table(df, style_map: dict = None, row_style_fn=None) -> object:
+    """Apply consistent dark styling + optional column-level styling + optional
+    row-level highlight (v3.23: เพิ่ม row_style_fn — ย้อมทั้งแถวเป็นแถบสี
+    แทนที่จะย้อมแค่ตัวหนังสือในคอลัมน์เดียว ดูง่ายกว่าเดิมมากว่าหุ้นตัวไหน
+    'เข้าเงื่อนไข' จริงๆ)"""
     s = df.style.set_properties(**BASE_TBL).set_table_styles(HDR_TBL).hide(axis="index")
+    if row_style_fn:
+        s = s.apply(row_style_fn, axis=1)
     if style_map:
         for col, fn in style_map.items():
             if col in df.columns:
@@ -2070,7 +2184,7 @@ import streamlit as st
 # กลางทาง จะไม่มีทางแยกออกว่าข้อมูลไหน "ก่อน/หลัง" การเปลี่ยนนั้น ตอนนี้ทำให้
 # เป็นค่าคงที่จริงในโค้ด แล้ว fetch_data.py stamp ค่านี้ลงไปในทุกไฟล์ JSON
 # ที่เซฟ (ดู fetch_data.py) เพื่อให้ข้อมูลในอนาคตกรองตาม version ได้เอง
-APP_VERSION = "3.21"
+APP_VERSION = "3.24"
 
 LIVE_SCAN_SAFETY_CAP = 100
 
@@ -2374,6 +2488,37 @@ def main():
 
     df = st.session_state.df
 
+    # v3.22: รายการแนวรับแบบย่อในไซด์บาร์จริงๆ (ด้านซ้ายมือ ไม่ใช่แท็บ) ตามที่
+    # ขอ — เรียงจากมูลค่าบริษัทมากไปน้อย ไม่ผูกกับ filter อื่นๆที่เลือกไว้ใน
+    # ตารางหลัก (จะได้เป็นจุดอ้างอิงเร็วๆ ที่ไม่เปลี่ยนไปมาตามการปรับ filter)
+    # แสดง Top 10 — เลือกเลขนี้เพราะไซด์บาร์แคบ เกิน 10 แถวต้องเลื่อนดูอยู่ดี
+    # ไม่ต่างจากการดูในตารางหลักที่มีรายละเอียดครบกว่า จะได้กระชับจริงๆ
+    if not df.empty and "Support" in df.columns and "MktCap$B" in df.columns:
+        sup_df = df[df["Support"].isin(["🟢 อยู่ที่แนวรับ", "🟡 ใกล้แนวรับ"])].copy()
+        if not sup_df.empty:
+            sup_df = sup_df.sort_values("MktCap$B", ascending=False)
+            top_n_side = 10
+            top_side = sup_df.head(top_n_side)
+            st.sidebar.markdown("---")
+            st.sidebar.markdown(f"### 🟢 แนวรับ Top {len(top_side)}")
+            st.sidebar.caption("เรียงมูลค่าบริษัทมาก→น้อย")
+            rows_html = ""
+            for _, r in top_side.iterrows():
+                tier_icon = "🟢" if "อยู่ที่แนวรับ" in str(r["Support"]) else "🟡"
+                mc = r.get("MktCap$B", 0) or 0
+                px_r = r.get("Price", 0) or 0
+                rows_html += (
+                    f'<div style="display:flex;justify-content:space-between;align-items:center;'
+                    f'padding:5px 2px;border-bottom:1px solid #22344f;font-size:0.82rem;">'
+                    f'<span>{tier_icon} <b style="color:#e8f0ff;">{r["Ticker"]}</b> '
+                    f'<span style="color:#5b7299;font-size:0.75rem;">${px_r:,.1f}</span></span>'
+                    f'<span style="color:#93a8c9;">${mc:,.0f}B</span>'
+                    f'</div>'
+                )
+            st.sidebar.markdown(f'<div style="margin-top:4px;">{rows_html}</div>', unsafe_allow_html=True)
+            if len(sup_df) > top_n_side:
+                st.sidebar.caption(f"อีก {len(sup_df) - top_n_side} ตัว — ดูครบในตารางหลัก")
+
     # ── แสดงสถานะ ──────────────────────────────────────
     if st.session_state.ran and not df.empty:
         if auto_loaded:
@@ -2585,7 +2730,8 @@ def main():
             smap = {"💎 Gem": _sty_gem,
                     "Support": _sty_support, "Resistance": _sty_resistance, "Weekly Trend": _sty_weekly}
             st.markdown(f"**{len(dfv)} หุ้นที่ตรงเงื่อนไข**")
-            st.dataframe(make_table(dfv, smap), use_container_width=True, height=520)
+            st.dataframe(make_table(dfv, smap, row_style_fn=_row_highlight_support),
+                         use_container_width=True, height=520)
 
             if "Support Quality" in df.columns:
                 strong_sup = df[(df["Support"] != "—") & (df["Support Quality"] >= 6)]
@@ -2694,7 +2840,8 @@ def main():
             # v3.9: ลดคอลัมน์ที่ style เหมือนกับ Dashboard (เหตุผลเดียวกัน)
             gsmap = {"💎 Gem": _sty_gem, "Gem Score": _sty_gs, "Support": _sty_support}
             st.markdown(f"**{len(dfg)} หุ้น**")
-            st.dataframe(make_table(dfg, gsmap), use_container_width=True, height=540)
+            st.dataframe(make_table(dfg, gsmap, row_style_fn=_row_highlight_support),
+                         use_container_width=True, height=540)
 
             with st.expander("📖 อ่านค่า"):
                 st.markdown("""
@@ -3237,6 +3384,22 @@ def main():
                               "หรือต่ำกว่า แปลว่ายังไม่ควรเชื่อมั่นมาก ควรใช้ร่วมกับการวิเคราะห์อื่นเสมอ")
                 else:
                     st.info("ไม่พบข้อมูล Support ในช่วงทดสอบ — อาจเป็นเพราะหุ้นตัวอย่างไม่ค่อยมีจังหวะใกล้แนวรับในช่วงนี้")
+
+                # v3.24 ข้อ 1: ตาราง breakdown แยกทีละปัจจัย (touch/volume/
+                # confluence) — เดิมน้ำหนักคะแนนใน support_status() (touch×1.5,
+                # volume 2, confluence 2) เป็นตัวเลขที่ตั้งเอง ไม่เคยพิสูจน์
+                # ว่าปัจจัยไหนช่วยจริง ตารางนี้ให้ดูของจริงว่าปัจจัยไหน Win Rate
+                # สูงกว่ากันชัดเจน จะได้รู้ว่าควรเชื่อปัจจัยไหนมากกว่ากัน
+                factor_table = sup_res.get("factor_table", pd.DataFrame())
+                if not factor_table.empty:
+                    with st.expander("🔬 แยกทีละปัจจัย — อันไหนช่วยจริง (Touch/Volume/Confluence)", expanded=False):
+                        st.caption("เทียบ Win Rate/ผลตอบแทนของแต่ละปัจจัยที่ใช้ให้คะแนน Support Quality "
+                                  "แยกกัน — ถ้าคู่ไหน (เช่น 'มี Confluence' vs 'ไม่มี Confluence') ตัวเลขต่างกัน "
+                                  "ชัดเจน แปลว่าปัจจัยนั้นมีผลจริง ถ้าใกล้เคียงกันมาก แปลว่าปัจจัยนั้นอาจไม่ค่อย "
+                                  "สำคัญเท่าที่คิดไว้ตอนตั้งน้ำหนักคะแนน")
+                        factor_smap = {"ผลตอบแทนเฉลี่ย 20วัน%": _sty_rs, "Win Rate 20วัน%": _sty_wr,
+                                      "ความเชื่อมั่น": _sty_confidence}
+                        st.dataframe(make_table(factor_table, factor_smap), use_container_width=True)
 
                 with st.expander("⚠️ ข้อจำกัดของผลทดสอบนี้ (อ่านก่อนเชื่อตัวเลข)"):
                     st.caption(sup_res["notes"])
