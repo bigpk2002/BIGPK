@@ -2184,7 +2184,7 @@ import streamlit as st
 # กลางทาง จะไม่มีทางแยกออกว่าข้อมูลไหน "ก่อน/หลัง" การเปลี่ยนนั้น ตอนนี้ทำให้
 # เป็นค่าคงที่จริงในโค้ด แล้ว fetch_data.py stamp ค่านี้ลงไปในทุกไฟล์ JSON
 # ที่เซฟ (ดู fetch_data.py) เพื่อให้ข้อมูลในอนาคตกรองตาม version ได้เอง
-APP_VERSION = "3.24"
+APP_VERSION = "3.25"
 
 LIVE_SCAN_SAFETY_CAP = 100
 
@@ -2478,7 +2478,20 @@ def main():
             # ท้ายๆจะไม่มีทางโผล่มาให้เห็นเลย ทั้งที่กรองจาก bundle ไม่มีต้นทุน
             # เพิ่มอะไรเลย (ข้อมูลอยู่ในหน่วยความจำแล้ว) — ตอนนี้ใช้ tickers_all
             # (universe เต็ม) แทน ไม่ตัดทิ้งอะไรก่อนกรองอีกต่อไป
-            have, dropped = get_with_bundle_fallback(tickers_all, bundle_df)
+            # v3.25 BUG FIX (พบจากที่ user รายงานว่าโหลดช้า): get_with_bundle_
+            # fallback() ค่า default คือ max_live_fallback=15 — แปลว่าตอน
+            # เปิดแอปปกติ (ไม่ได้กด Run Screener) ถ้ามี ticker เหลือไม่เจอใน
+            # bundle ≤15 ตัว (เช่น Sector บางหมวดที่วันนั้นสแกนไม่ครบ) แอปจะ
+            # แอบยิง Yahoo สดให้ "เงียบๆ" โดยไม่มีใครกดปุ่มอะไรเลย — ขัดกับ
+            # หลักการที่วางไว้ทั้งระบบว่า "ไม่มีการยิง Yahoo สดถ้าไม่ได้กด Run
+            # Screener" (คือที่มาของ LIVE_SCAN_SAFETY_CAP ที่ทำไว้ก่อนหน้า)
+            # และเป็นสาเหตุที่หน้าเว็บโหลดช้าโดยไม่รู้ตัวว่าทำไม — Sector
+            # Focus/Custom Tickers ที่ universe เล็กมีโอกาสโดนทางนี้บ่อยสุด
+            # แก้โดยตั้ง max_live_fallback=0 สำหรับเส้นทาง auto-loaded นี้
+            # โดยเฉพาะ (ticker ที่หาไม่เจอจะโชว์แค่ caption แจ้งเตือนแทน ไม่
+            # พยายามดึงสดอีกต่อไป —ยังกด "🚀 Run Screener" เองได้เสมอถ้า
+            # อยากได้ครบจริงๆ)
+            have, dropped = get_with_bundle_fallback(tickers_all, bundle_df, max_live_fallback=0)
             st.session_state.df = have
             st.session_state.dropped_tickers = dropped
             st.session_state.ran = True
