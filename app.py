@@ -492,6 +492,14 @@ SECTOR_MAP = {
     "🏠 REIT | กองทุนอสังหา":         ["O","PLD","AMT","EQIX","PSA","DLR","SPG","AVB","EQR","WELL","VTR","ARE","BXP","KIM","REG","IIPR"],
 }
 
+# v3.31 ข้อ 4: reverse lookup ticker → sector — ใช้บอกบริบทว่าหุ้นตัวนี้อยู่
+# sector ไหน แล้วเทียบกับ Sector Heatmap ที่มีอยู่แล้วว่า sector นั้นกำลัง
+# "ร้อน" (Bull % สูง) อยู่ไหม เป็นบริบทเพิ่มที่ไม่ต้องคำนวณคะแนนใหม่เลย แค่
+# เอาข้อมูลที่มีอยู่แล้ว 2 ชุดมาโยงกัน — หุ้นที่ตัวเลข Support Quality
+# เท่ากันเป๊ะ แต่อยู่คนละ sector (sector หนึ่งร้อนแรง อีก sector เย็นชืด)
+# ควรรู้สึกต่างกัน แม้ Support จะเหมือนกันก็ตาม
+TICKER_TO_SECTOR = {tk: sector for sector, tickers in SECTOR_MAP.items() for tk in tickers}
+
 # v3.20: ย้อนกลับ v3.17 ตามที่ตัดสินใจ — ข้อมูลพื้นฐานของหุ้นเล็ก/ไมโครแคป
 # จาก yfinance ไม่ครบเป็นเรื่องปกติ เสี่ยงให้ "Top 100" กลายเป็น "100 ตัวที่
 # บังเอิญมีข้อมูลครบ" มากกว่า "100 ตัวที่ดีที่สุดจริง" — กลับไปใช้
@@ -643,6 +651,30 @@ def signal_age(closes: pd.Series) -> int:
     return -1
 
 
+def support_age(closes: pd.Series, level: float, band_pct: float = 4.0) -> int:
+    """
+    v3.31: นับว่าราคาอยู่ในระยะ "ที่แนวรับนี้" (ห่างไม่เกิน band_pct%) มาต่อเนื่อง
+    กี่วันแล้ว จากวันนี้ย้อนกลับไป — ใช้ตอบคำถาม "แนวรับนี้สดใหม่ หรือนอนแช่มา
+    นานแล้ว" ซึ่งเป็นบริบทเวลาที่ตารางเดิมไม่เคยบอกเลย (มีแต่ Quality Score
+    ตัวเดียว ไม่รู้ว่า "ใหม่" หรือ "เก่า") ยึดวิธีเดียวกับ signal_age()/Trend
+    Age ที่มีอยู่แล้ว (scan ย้อนหลังจากราคาปัจจุบัน) เพื่อความสม่ำเสมอ
+
+    ⚠️ เป็นค่าประมาณ — ใช้ระดับแนวรับของ "วันนี้" ไล่ย้อนหลังไปเทียบกับราคา
+    ในอดีต ไม่ได้คำนวณใหม่ทุกวันว่าระบบตอนนั้นจะบอกระดับเดียวกันหรือไม่
+    (ระดับแนวรับเปลี่ยนช้าอยู่แล้วในทางปฏิบัติ จึงเป็นค่าประมาณที่สมเหตุสมผล)
+    """
+    if pd.isna(level) or level <= 0 or len(closes) < 2:
+        return 0
+    age = 0
+    for i in range(len(closes) - 1, -1, -1):
+        dist = abs(closes.iloc[i] - level) / level * 100
+        if dist <= band_pct:
+            age += 1
+        else:
+            break
+    return max(age - 1, 0)  # วันนี้นับเป็น 0 ถ้าเพิ่งมาถึงวันแรก
+
+
 def _find_swing_levels(df: pd.DataFrame, col: str, mode: str, lookback: int = 180,
                        swing_window: int = 5, min_bars: Optional[int] = None) -> list:
     """
@@ -791,7 +823,7 @@ def support_status(price: float, df: pd.DataFrame, e50: float, e200: float, rs20
     """
     empty = {"status": "—", "level": np.nan, "distance_pct": np.nan,
              "quality_score": 0, "touch_count": 0, "volume_confirmed": False, "confluence": False,
-             "zone_low": np.nan, "zone_high": np.nan, "zone_label": "—"}
+             "zone_low": np.nan, "zone_high": np.nan, "zone_label": "—", "age_days": 0}
 
     weekly_df = resample_weekly_ohlc(df)
     swing_levels = find_support_levels(weekly_df, lookback=52, swing_window=2, min_bars=14)
@@ -865,6 +897,8 @@ def support_status(price: float, df: pd.DataFrame, e50: float, e200: float, rs20
     else:
         status = "—"
 
+    age = support_age(df["Close"], best["level"]) if status != "—" else 0
+
     return {
         "status": status, "level": round(best["level"], 2), "distance_pct": best["distance_pct"],
         "quality_score": best["quality_score"], "touch_count": best["touch_count"],
@@ -872,6 +906,7 @@ def support_status(price: float, df: pd.DataFrame, e50: float, e200: float, rs20
         "zone_low": best["zone_low"], "zone_high": best["zone_high"],
         "zone_label": (f'{best["zone_low"]:.2f}–{best["zone_high"]:.2f}'
                       if best["zone_high"] > best["zone_low"] else f'{best["level"]:.2f}'),
+        "age_days": age,
     }
 
 
@@ -1254,8 +1289,9 @@ def analyze(ticker: str, period: str = "1y", interval: str = "1d", bench_tuple=N
         fnd = _cached_fundamentals(ticker)
         gs, gl = gem_score(ep_sc, acc_sc, vm20 or 0, rsi_val, draw or 0, fnd["mktcap_b"])
 
-        return {
+        row_out = {
             "Ticker": ticker, "Price": round(px, 2), "ราคาปิด": prev_c,
+            "Sector": TICKER_TO_SECTOR.get(ticker, "—"),
             "Trend": trend, "Phase": ep_lbl, "Stars": stars,
             "EMA5": round(ep[5], 2), "EMA10": round(ep[10], 2), "EMA20": round(ep[20], 2),
             "EMA50": round(ep[50], 2), "EMA100": round(ep[100], 2), "EMA200": round(ep[200], 2),
@@ -1272,6 +1308,7 @@ def analyze(ticker: str, period: str = "1y", interval: str = "1d", bench_tuple=N
             "Support Zone": sup["zone_label"],
             "Support Quality": sup["quality_score"], "Support Touches": sup["touch_count"],
             "Support Vol Confirmed": sup["volume_confirmed"], "Support Confluence": sup["confluence"],
+            "Support Age": sup.get("age_days", 0),
             "Resistance": res["status"], "Resistance Zone": res["zone_label"],
             "Resistance Dist%": res["distance_pct"], "Resistance Quality": res["quality_score"],
             "Resistance Level": res["level"],
@@ -1279,6 +1316,17 @@ def analyze(ticker: str, period: str = "1y", interval: str = "1d", bench_tuple=N
             "RS 20D": rs20, "RS 50D": rs50,
             "P/E": fnd["pe"], "P/BV": fnd["pb"], "Div%": fnd["div"], "MktCap$B": fnd["mktcap_b"],
         }
+        # v3.31 ข้อ 2: Risk:Reward — เอา Support (ความเสี่ยง) + Resistance
+        # (เป้าหมาย) ที่คำนวณไว้แล้วทั้งคู่มารวมเป็นตัวเลขเดียวที่ตัดสินใจได้
+        # ทันที ไม่ต้องเข้า Deep Dive ทีละตัวถึงจะเห็น — ไม่ใช่คะแนนใหม่ แค่
+        # หารเลขที่ validate แล้วทั้งสองฝั่ง
+        risk = px - sup["level"] if pd.notna(sup["level"]) else np.nan
+        reward = res["level"] - px if pd.notna(res["level"]) else np.nan
+        rr_ratio = np.nan
+        if pd.notna(risk) and pd.notna(reward) and risk > 0:
+            rr_ratio = round(reward / risk, 2)
+        row_out["Risk:Reward"] = rr_ratio
+        return row_out
     except Exception as e:
         log_err(f"analyze({ticker})", e)
         return None
@@ -1887,6 +1935,101 @@ def _sty_squeeze(v):
     return "color:#5b7299;"
 
 
+# v3.32: คำแปลไทยกำกับหัวคอลัมน์ที่เป็นศัพท์อังกฤษ — ใช้รูปแบบเดียวกับที่มี
+# อยู่แล้วในแอป (เช่น filter label "Trend | แนวโน้ม") มาใช้กับหัวตารางด้วย
+# ตั้งใจไม่แปลทุกคำ — คำที่เป็นมาตรฐานสากลอยู่แล้ว (RSI, P/E) ถ้าแปลจะยิ่ง
+# งงกว่าเดิม เพราะไม่มีใครเรียกชื่อไทยของมันจริงๆในวงการ
+COLUMN_LABEL_TH = {
+    "Ticker": "Ticker | หุ้น",
+    "Price": "Price | ราคา",
+    "ราคาปิด": "ราคาปิด | Prev Close",
+    "Sector": "Sector | หมวดธุรกิจ",
+    "Trend": "Trend | แนวโน้ม",
+    "Support": "Support | แนวรับ",
+    "Support Zone": "Support Zone | ช่วงแนวรับ",
+    "Support Dist%": "Support Dist% | ห่างแนวรับ",
+    "Support Age": "Support Age | แนวรับมา(วัน)",
+    "Support Quality": "Support Quality | คุณภาพแนวรับ",
+    "Support Touches": "Support Touches | แตะกี่ครั้ง",
+    "Resistance": "Resistance | แนวต้าน",
+    "Resistance Zone": "Resistance Zone | ช่วงแนวต้าน",
+    "Resistance Dist%": "Resistance Dist% | ห่างแนวต้าน",
+    "Risk:Reward": "Risk:Reward | เสี่ยง:ผลตอบแทน",
+    "Trend Age": "Trend Age | แนวโน้มมา(วัน)",
+    "💎 Gem": "💎 Gem | หุ้นซ่อนเร้น",
+    "Accum": "Accum | การสะสม",
+    "Sector Bull%": "Sector Bull% | หมวดขาขึ้น%",
+    "MktCap$B": "MktCap$B | มูลค่าบริษัท($B)",
+    "Stars": "Stars | ดาว",
+    # v3.33: เพิ่มคำแปลสำหรับตารางอื่นๆ ทั่วแอป (ไม่ใช่แค่ Dashboard) — Hidden
+    # Gems, Watchlist, Backtester, Sector Map
+    "Support Vol Confirmed": "Support Vol Confirmed | Volume ยืนยัน",
+    "Support Confluence": "Support Confluence | แนวรับซ้อนกัน",
+    "Trade #": "Trade # | ไม้ที่",
+    "Return %": "Return % | ผลตอบแทน%",
+    "Entry": "Entry | ราคาเข้า",
+    "Exit": "Exit | ราคาออก",
+    "Result": "Result | ผลลัพธ์",
+    "Avg Gem Score": "Avg Gem Score | คะแนน Gem เฉลี่ย",
+    "Avg Accum": "Avg Accum | คะแนนสะสมเฉลี่ย",
+    "Bull %": "Bull % | ขาขึ้น%",
+    "Weekly Trend": "Weekly Trend | แนวโน้มรายสัปดาห์",
+    "EMA Pattern": "EMA Pattern | รูปแบบเส้น EMA",
+    "Squeeze": "Squeeze | การหดตัว",
+    "RS 20D": "RS 20D | ความแข็งแกร่งเทียบตลาด",
+    "YTD%": "YTD% | ผลตอบแทนปีนี้%",
+    "Drawdown%": "Drawdown% | ลดลงจากจุดสูงสุด%",
+    "Trades": "Trades | จำนวนไม้",
+    "Win%": "Win% | อัตราชนะ%",
+    "Avg Ret%": "Avg Ret% | ผลตอบแทนเฉลี่ย%",
+    "Best%": "Best% | ดีที่สุด%",
+    "Worst%": "Worst% | แย่ที่สุด%",
+    "vs Buy&Hold%": "vs Buy&Hold% | เทียบถือยาว%",
+    "Gem Score": "Gem Score | คะแนนหุ้นซ่อนเร้น",
+}
+
+
+def apply_thai_labels(dfx: pd.DataFrame, style_map: dict = None):
+    """
+    v3.32: rename คอลัมน์เป็น "English | ไทย" สำหรับแสดงผล **เฉพาะตอนจะโชว์
+    บนตารางเท่านั้น** — เรียกเป็นขั้นตอนสุดท้ายก่อน st.dataframe() เสมอ ห้าม
+    เรียกก่อนหน้านั้น (ก่อน sort/filter/style) เพราะโค้ดส่วนอื่นทั้งหมดยังคง
+    อ้างอิงชื่อคอลัมน์เดิม (ภาษาอังกฤษล้วน) อยู่ — ฟังก์ชันนี้แค่เปลี่ยนชื่อที่
+    "เห็น" ตอนสุดท้าย ไม่กระทบ logic ใดๆก่อนหน้า
+
+    คืนค่า (df ที่ rename แล้ว, style_map ที่ปรับ key ให้ตรงกับชื่อใหม่แล้ว)
+    """
+    dfx2 = dfx.rename(columns=COLUMN_LABEL_TH)
+    style_map2 = None
+    if style_map:
+        style_map2 = {COLUMN_LABEL_TH.get(k, k): v for k, v in style_map.items()}
+    return dfx2, style_map2
+
+
+def support_tier(quality) -> str:
+    """
+    v3.31 ข้อ 3: จัดกลุ่มเป็นระดับ (🔥/👍/👀) แทนตัวเลขต่อเนื่องล้วนๆ — ไม่ใช่
+    คะแนนใหม่ แค่แบ่งช่วงจาก Support Quality ที่มีอยู่แล้ว (เกณฑ์เดียวกับที่
+    ใช้ใน Quick Pick sidebar: ≥8=สูงสุด, ≥6=น่าสนใจ) มนุษย์แยกแยะ "กลุ่ม"
+    ได้ง่ายกว่าเทียบตัวเลขต่อเนื่องทีละคู่ — ช่วยแก้ปัญหา "หน้าตาเหมือนกันหมด"
+    """
+    if pd.isna(quality) or quality <= 0:
+        return "—"
+    if quality >= 8:
+        return "🔥 สูงสุด"
+    if quality >= 6:
+        return "👍 น่าสนใจ"
+    return "👀 เฝ้าดู"
+
+
+def _sty_tier(v):
+    v = str(v)
+    if "สูงสุด" in v: return "color:#ff8a3d;font-weight:800;"
+    if "น่าสนใจ" in v: return "color:#34f5a4;font-weight:700;"
+    if "เฝ้าดู" in v: return "color:#5b7299;"
+    return "color:#5b7299;"
+
+
 def _sty_support(v):
     v = str(v)
     if "อยู่ที่แนวรับ" in v: return "color:#34f5a4;font-weight:800;"
@@ -1906,8 +2049,17 @@ def _row_highlight_support(row):
       🟢 อยู่ที่แนวรับ (ห่างราคา ≤1.5%) → แถบเขียวอ่อน
       🟡 ใกล้แนวรับ (ห่างราคา 1.5-4%)  → แถบเหลืองอ่อน
     ไม่เข้าเงื่อนไขทั้งสอง → ไม่มีแถบสี (พื้นหลังปกติ)
+
+    v3.32: หา column "Support" แบบยืดหยุ่น (เผื่อถูก rename เป็นสองภาษา เช่น
+    "Support | แนวรับ" ตอนแสดงผล) แทนที่จะเช็คชื่อ "Support" ตรงๆ อย่างเดียว
+    ป้องกันฟีเจอร์แถบสีพังเงียบๆ ถ้ามีคนไป rename คอลัมน์ทีหลัง
     """
-    sup = str(row.get("Support", ""))
+    sup_val = ""
+    for col in row.index:
+        if col == "Support" or str(col).startswith("Support |") or str(col).startswith("Support ("):
+            sup_val = row[col]
+            break
+    sup = str(sup_val)
     if "อยู่ที่แนวรับ" in sup:
         return ["background-color: rgba(52,245,164,0.10);"] * len(row)
     if "ใกล้แนวรับ" in sup:
@@ -2184,7 +2336,7 @@ import streamlit as st
 # กลางทาง จะไม่มีทางแยกออกว่าข้อมูลไหน "ก่อน/หลัง" การเปลี่ยนนั้น ตอนนี้ทำให้
 # เป็นค่าคงที่จริงในโค้ด แล้ว fetch_data.py stamp ค่านี้ลงไปในทุกไฟล์ JSON
 # ที่เซฟ (ดู fetch_data.py) เพื่อให้ข้อมูลในอนาคตกรองตาม version ได้เอง
-APP_VERSION = "3.30"
+APP_VERSION = "3.36"
 
 LIVE_SCAN_SAFETY_CAP = 100
 
@@ -2408,6 +2560,16 @@ def main():
         mobile_mode = st.checkbox("📱 โหมดมือถือ (คอลัมน์น้อยลง อ่านง่ายบนจอเล็ก)", value=False,
                                   help="เหลือแค่ Ticker/Price/Support/Support Zone/MktCap ตัดคอลัมน์ที่ไม่จำเป็นออก "
                                        "กดเปิดเองตอนใช้บนมือถือ ปิดกลับได้ตลอดเวลา")
+
+        # v3.34: "โหมดเรียบง่าย" สำหรับ Desktop — เปิดเป็นค่าเริ่มต้น (True)
+        # ตามที่ตัดสินใจไว้ว่าปัญหาจริงคือ "การแสดงผลแน่นเกินไป" ไม่ใช่ตัวระบบ
+        # ข้างในผิด — ทางแก้นี้แค่ลดคอลัมน์ที่โชว์ ไม่แตะ logic การคำนวณใดๆ
+        # เลย ปลอดภัยกว่าการรื้อทำใหม่ทั้งหมดมาก ปิดเพื่อดูแบบละเอียดได้เสมอ
+        simple_mode = st.checkbox("🎯 โหมดเรียบง่าย (แนะนำ — เห็นเฉพาะสิ่งจำเป็นต่อการตัดสินใจ)",
+                                  value=True,
+                                  help="เหลือแค่ Ticker/Price/Support/Support Zone/Risk:Reward/ระดับ "
+                                       "ปิดโหมดนี้เพื่อดูคอลัมน์ละเอียดครบทุกตัว (Support Quality, Sector, "
+                                       "Trend Age ฯลฯ) สำหรับคนที่อยากเจาะลึก")
 
         st.markdown("---")
         run_btn = st.button("🚀 Run Screener | สแกนสดเดี๋ยวนี้", use_container_width=True,
@@ -2760,16 +2922,38 @@ def main():
             # v3.28: โหมดมือถือ — เหลือแค่คอลัมน์ที่จำเป็นสุดสำหรับตัดสินใจซื้อ
             # (Ticker/Price/Support/Support Zone/Support Dist%/MktCap) กดเปิด
             # เองจากไซด์บาร์ ไม่ใช่ auto-detect
+            # v3.31: เพิ่ม 4 ตัวช่วยแยกแยะหุ้น (ตามที่ขอ — "หน้าตาเหมือนกันหมด")
+            # ทั้งหมดใช้ข้อมูลที่ validate แล้วหรือแค่จัดรูปแบบใหม่ ไม่สร้าง
+            # คะแนนรวมใหม่แบบที่เคยตัดทิ้งไปในแท็บ "หุ้นน่าติดตาม"
+            df = df.copy()
+            if "Support Quality" in df.columns:
+                df["ระดับ"] = df["Support Quality"].apply(support_tier)
+            # ข้อ 4: Sector Bull% — โยง Sector Heatmap ที่มีอยู่แล้วเข้ากับหุ้น
+            # แต่ละตัวผ่านคอลัมน์ Sector (v3.31 ใหม่ใน analyze())
+            _, sector_hm_df = load_prefetched_sector_heatmap()
+            if sector_hm_df is not None and not sector_hm_df.empty and "Sector" in df.columns:
+                bull_map = dict(zip(sector_hm_df["Sector"], sector_hm_df.get("Bull %", pd.Series(dtype=float))))
+                df["Sector Bull%"] = df["Sector"].map(bull_map)
+
             if mobile_mode:
                 show_cols = [c for c in ["Ticker", "Price", "Support", "Support Zone",
                                          "Support Dist%", "MktCap$B"]
                              if c in df.columns]
+            elif simple_mode:
+                # v3.36: แยกงาน "สแกนกว้าง" (Dashboard/Hidden Gems) ออกจากงาน
+                # "หาจุดเข้า" (Deep Dive) อย่างชัดเจนตามที่ตกลงกัน — Dashboard
+                # ควรเบาที่สุด แค่บอกว่า "ตัวไหนน่าคลิกเข้าไปดูต่อ" เท่านั้น
+                # ตัด Risk:Reward ออกจากที่นี่ (เป็นข้อมูลระดับ "ตัดสินใจ" ไม่ใช่
+                # "ค้นหา") ย้ายไปอยู่ที่ Deep Dive อย่างเดียว (ดู sup_badge ด้านล่าง
+                # ที่เพิ่ม Risk:Reward/Support Age/Sector เข้าไปแล้ว)
+                show_cols = [c for c in ["Ticker", "Price", "Support", "Support Zone", "ระดับ"]
+                             if c in df.columns]
             else:
-                show_cols = [c for c in ["Ticker", "Price", "ราคาปิด", "Trend", "RSI",
-                                         "Support", "Support Zone", "Support Dist%",
-                                         "Support Quality", "Support Touches",
-                                         "Resistance", "Resistance Zone", "Resistance Dist%",
-                                         "Trend Age", "💎 Gem", "Accum", "MktCap$B", "Stars"]
+                show_cols = [c for c in ["Ticker", "Price", "ราคาปิด", "Sector", "Trend", "RSI",
+                                         "Support", "Support Zone", "Support Dist%", "Support Age",
+                                         "Support Quality", "ระดับ", "Support Touches",
+                                         "Resistance", "Resistance Zone", "Resistance Dist%", "Risk:Reward",
+                                         "Trend Age", "💎 Gem", "Accum", "Sector Bull%", "MktCap$B", "Stars"]
                              if c in df.columns]
             dfv = df[show_cols].copy()
             if "Support Dist%" in dfv.columns:
@@ -2781,9 +2965,18 @@ def main():
             if "Support Touches" in dfv.columns:
                 dfv["Support Touches"] = dfv["Support Touches"].apply(
                     lambda x: f"{int(x)}x" if pd.notna(x) and x > 0 else "—")
+            if "Support Age" in dfv.columns:
+                dfv["Support Age"] = dfv["Support Age"].apply(
+                    lambda x: f"{int(x)}d" if pd.notna(x) and x > 0 else ("ใหม่" if pd.notna(x) else "—"))
             if "Resistance Dist%" in dfv.columns:
                 dfv["Resistance Dist%"] = dfv["Resistance Dist%"].apply(
                     lambda x: f"+{x:.1f}%" if pd.notna(x) else "—")
+            if "Risk:Reward" in dfv.columns:
+                dfv["Risk:Reward"] = dfv["Risk:Reward"].apply(
+                    lambda x: f"1:{x:.1f}" if pd.notna(x) and x > 0 else "—")
+            if "Sector Bull%" in dfv.columns:
+                dfv["Sector Bull%"] = dfv["Sector Bull%"].apply(
+                    lambda x: f"{x:.0f}%" if pd.notna(x) else "—")
 
             if "Trend Age" in dfv.columns:
                 dfv["Trend Age"] = dfv["Trend Age"].apply(
@@ -2818,12 +3011,21 @@ def main():
 
             dfv = dfv.sort_values(["_st", "_mc", "_sq"]).drop(columns=["_st", "_mc", "_sq"])
 
-            # v3.27: ตัด Weekly Trend ออกจาก style map ด้วย (คอลัมน์ไม่แสดงแล้ว)
+            # v3.31: เพิ่ม style ระดับ (Tier) เข้าไปด้วย
             smap = {"💎 Gem": _sty_gem,
-                    "Support": _sty_support, "Resistance": _sty_resistance}
+                    "Support": _sty_support, "Resistance": _sty_resistance, "ระดับ": _sty_tier}
             st.markdown(f"**{len(dfv)} หุ้นที่ตรงเงื่อนไข**")
-            st.dataframe(make_table(dfv, smap, row_style_fn=_row_highlight_support),
-                         use_container_width=True, height=520)
+            # v3.32: rename เป็น "English | ไทย" ตอนแสดงผลจริงเท่านั้น (ขั้นตอน
+            # สุดท้ายก่อน dataframe เสมอ — sort/filter/style ด้านบนทั้งหมดใช้
+            # ชื่อคอลัมน์เดิมตามปกติ ไม่ถูกกระทบ)
+            dfv_th, smap_th = apply_thai_labels(dfv, smap)
+            # v3.35: ลดความสูงตารางลงตอนโหมดมือถือ — ตารางสูงเกินจอมือถือทำให้
+            # เกิด "scroll ซ้อน scroll" (เลื่อนในตาราง vs เลื่อนทั้งหน้า ชนกัน
+            # รู้สึกเลื่อนยาก/ติด) ตารางเตี้ยลงช่วยให้เห็นขอบตารางง่ายขึ้น
+            # นิ้วจะรู้ว่ากำลังเลื่อนอะไรอยู่ชัดเจนกว่า
+            tbl_height = 320 if mobile_mode else 520
+            st.dataframe(make_table(dfv_th, smap_th, row_style_fn=_row_highlight_support),
+                         use_container_width=True, height=tbl_height)
 
             if "Support Quality" in df.columns:
                 strong_sup = df[(df["Support"] != "—") & (df["Support Quality"] >= 6)]
@@ -2845,7 +3047,7 @@ def main():
                         if "Support Confluence" in strong_view.columns:
                             strong_view["Support Confluence"] = strong_view["Support Confluence"].apply(
                                 lambda x: "✅ ซ้อนกัน" if x else "—")
-                        st.dataframe(make_table(strong_view, {"Support": _sty_support}),
+                        st.dataframe(make_table(*apply_thai_labels(strong_view, {"Support": _sty_support})),
                                      use_container_width=True, height=min(400, 50 + len(strong_view) * 36))
 
             st.markdown("---")
@@ -2910,10 +3112,24 @@ def main():
                     ["🔬 Stealth Accum", "📦 Quiet Accum", "🔍 Possible Accum", "👀 Watch"],
                     default=[], key="gf2", placeholder="ทั้งหมด")
 
-            gem_show = [c for c in ["Ticker", "Price", "ราคาปิด", "💎 Gem", "Gem Score",
-                                    "EMA Pattern", "Squeeze", "Accum", "Accum Score",
-                                    "Support", "Support Dist%",
-                                    "RSI", "Vol×20D", "RS 20D", "MktCap$B"] if c in df.columns]
+            # v3.35: Hidden Gems ไม่เคยเช็ค mobile_mode/simple_mode มาก่อนเลย
+            # ทั้งที่ Dashboard เช็คแล้วตั้งแต่ v3.28/3.34 — เป็นสาเหตุที่
+            # กดโหมดมือถือแล้วแท็บนี้ยังกว้างเหมือนเดิม (เจอจาก user ส่งภาพ
+            # มาให้ดู) แก้ให้เช็คเหมือนกันทุกแท็บที่มีตารางหลัก
+            if mobile_mode:
+                gem_show = [c for c in ["Ticker", "Price", "💎 Gem", "Support"]
+                           if c in df.columns]
+            elif simple_mode:
+                # v3.36: เหมือน Dashboard — ตัดรายละเอียดเชิงตัดสินใจ (Gem
+                # Score ตัวเลข, Accum) ออก เหลือแค่ label ที่บอกว่า "น่าคลิก
+                # เข้าไปดูต่อไหม" พอ
+                gem_show = [c for c in ["Ticker", "Price", "💎 Gem", "Support"]
+                           if c in df.columns]
+            else:
+                gem_show = [c for c in ["Ticker", "Price", "ราคาปิด", "💎 Gem", "Gem Score",
+                                        "EMA Pattern", "Squeeze", "Accum", "Accum Score",
+                                        "Support", "Support Dist%",
+                                        "RSI", "Vol×20D", "RS 20D", "MktCap$B"] if c in df.columns]
             dfg = df[gem_show].copy()
             if "Support Dist%" in dfg.columns:
                 dfg["Support Dist%"] = dfg["Support Dist%"].apply(
@@ -2932,8 +3148,10 @@ def main():
             # v3.9: ลดคอลัมน์ที่ style เหมือนกับ Dashboard (เหตุผลเดียวกัน)
             gsmap = {"💎 Gem": _sty_gem, "Gem Score": _sty_gs, "Support": _sty_support}
             st.markdown(f"**{len(dfg)} หุ้น**")
-            st.dataframe(make_table(dfg, gsmap, row_style_fn=_row_highlight_support),
-                         use_container_width=True, height=540)
+            dfg_th, gsmap_th = apply_thai_labels(dfg, gsmap)
+            gem_tbl_height = 320 if mobile_mode else 540
+            st.dataframe(make_table(dfg_th, gsmap_th, row_style_fn=_row_highlight_support),
+                         use_container_width=True, height=gem_tbl_height)
 
             with st.expander("📖 อ่านค่า"):
                 st.markdown("""
@@ -2999,6 +3217,7 @@ def main():
                 sup_conf_now = row.get("Support Confluence", False)
 
                 sup_zone_now = row.get("Support Zone", None)
+                sup_age_now = row.get("Support Age", 0)
                 sup_badge = ""
                 if sup_now != "—" and pd.notna(sup_level_now):
                     sup_col = "#34f5a4" if "อยู่ที่แนวรับ" in str(sup_now) else "#ffc857"
@@ -3009,6 +3228,11 @@ def main():
                         tags.append("Volume ยืนยัน")
                     if sup_conf_now:
                         tags.append("แนวรับซ้อนกัน")
+                    # v3.36: ย้าย Support Age มาไว้ที่นี่ (แทนที่จะโชว์ในตาราง
+                    # Dashboard แบบเดิม) เพราะเป็นข้อมูลระดับ "ตัดสินใจ" ไม่ใช่
+                    # "ค้นหา" ตามที่แบ่งงานกันไว้ใหม่
+                    if sup_age_now and sup_age_now > 0:
+                        tags.append(f"อยู่ที่นี่มา {int(sup_age_now)} วัน")
                     tag_str = f" · {' · '.join(tags)}" if tags else ""
                     # v3.14: โชว์เป็น "โซน" ราคา (เช่น $60.20–$65.40) แทนราคา
                     # เป๊ะๆจุดเดียว ถ้าแนวรับมาจากหลาย swing low ที่กลุ่มกัน —
@@ -3041,6 +3265,19 @@ def main():
                         f'คุณภาพ {res_quality_now:.1f}/10</span>'
                     )
 
+                # v3.36: Risk:Reward badge — ย้ายมาจาก Dashboard ตามที่แบ่งงาน
+                # กันใหม่ (Dashboard = ค้นหา, Deep Dive = ตัดสินใจ) คำนวณจาก
+                # Support/Resistance เดียวกับที่ analyze() ทำไว้แล้ว
+                rr_now = row.get("Risk:Reward", np.nan)
+                rr_badge = ""
+                if pd.notna(rr_now) and rr_now > 0:
+                    rr_col = "#34f5a4" if rr_now >= 2 else ("#ffc857" if rr_now >= 1 else "#ff3864")
+                    rr_badge = (
+                        f'<span style="background:rgba(255,215,118,0.08);border:1px solid {rr_col};'
+                        f'border-radius:6px;padding:4px 12px;font-size:0.85rem;font-weight:700;'
+                        f'color:{rr_col};">⚖️ Risk:Reward 1:{rr_now:.1f}</span>'
+                    )
+
                 st.markdown(
                     f'<div style="display:flex;align-items:center;gap:16px;'
                     f'padding:10px 0 6px 0;flex-wrap:wrap;">'
@@ -3059,7 +3296,20 @@ def main():
                     f'{rs20_now:.1f}%</b></span>'
                     f'{sup_badge}'
                     f'{res_badge}'
+                    f'{rr_badge}'
                     f'</div>', unsafe_allow_html=True)
+
+                # v3.36: บริบท Sector — ย้ายมาจาก Dashboard เช่นกัน
+                sector_now = row.get("Sector", "—")
+                if sector_now and sector_now != "—":
+                    _, sector_hm_now = load_prefetched_sector_heatmap()
+                    bull_now = None
+                    if sector_hm_now is not None and not sector_hm_now.empty:
+                        match = sector_hm_now[sector_hm_now["Sector"] == sector_now]
+                        if not match.empty:
+                            bull_now = match.iloc[0].get("Bull %")
+                    bull_txt = f" — {bull_now:.0f}% ของหมวดนี้เป็นขาขึ้นตอนนี้" if bull_now is not None else ""
+                    st.caption(f"📂 หมวด: {sector_now}{bull_txt}")
 
                 ema_info = [(5, "#93a8c9"), (10, "#93a8c9"), (20, "#ffd76a"),
                             (50, "#2de2e6"), (100, "#b66bff"), (200, "#ff3864")]
@@ -3438,11 +3688,11 @@ def main():
                         tdf.insert(0, "Trade #", range(1, len(tdf) + 1))
                         tdf["Result"] = tdf["ret"].apply(lambda x: "✅ Win" if x > 0 else "❌ Loss")
                         tdf = tdf.rename(columns={"ret": "Return %", "entry_date": "Entry", "exit_date": "Exit"})
-                        st.dataframe(make_table(tdf), use_container_width=True)
+                        st.dataframe(make_table(*apply_thai_labels(tdf)), use_container_width=True)
                     else:
                         tdf = pd.DataFrame({"Trade #": range(1, len(trades) + 1), "Return %": trades})
                         tdf["Result"] = tdf["Return %"].apply(lambda x: "✅ Win" if x > 0 else "❌ Loss")
-                        st.dataframe(make_table(tdf), use_container_width=True)
+                        st.dataframe(make_table(*apply_thai_labels(tdf)), use_container_width=True)
 
         st.markdown("---")
         st.markdown("### 📊 Support Accuracy — แนวรับแม่นแค่ไหนจริงๆ")
@@ -3470,7 +3720,8 @@ def main():
                     sup_smap = {"Support": _sty_support, "ผลตอบแทนเฉลี่ย 10วัน%": _sty_rs,
                                "ผลตอบแทนเฉลี่ย 20วัน%": _sty_rs, "Win Rate 10วัน%": _sty_wr,
                                "Win Rate 20วัน%": _sty_wr, "ความเชื่อมั่น": _sty_confidence}
-                    st.dataframe(make_table(sup_table, sup_smap), use_container_width=True)
+                    sup_table_th, sup_smap_th = apply_thai_labels(sup_table, sup_smap)
+                    st.dataframe(make_table(sup_table_th, sup_smap_th), use_container_width=True)
                     st.caption("ถ้า Win Rate 10/20 วันของ '🟢 อยู่ที่แนวรับ' สูงกว่า 50% และสูงกว่า Buy & Hold "
                               "เฉลี่ยด้านบนชัดเจน แปลว่าฟีเจอร์แนวรับมีหลักฐานสนับสนุนว่าใช้ได้จริง — ถ้าใกล้เคียง "
                               "หรือต่ำกว่า แปลว่ายังไม่ควรเชื่อมั่นมาก ควรใช้ร่วมกับการวิเคราะห์อื่นเสมอ")
@@ -3539,7 +3790,7 @@ def main():
                     f'</div>', unsafe_allow_html=True)
 
             st.markdown("---")
-            st.dataframe(make_table(sec_df[["Sector", "Avg Gem Score", "Avg Accum", "Bull %"]]),
+            st.dataframe(make_table(*apply_thai_labels(sec_df[["Sector", "Avg Gem Score", "Avg Accum", "Bull %"]])),
                          use_container_width=True)
         else:
             st.markdown("""
@@ -3620,10 +3871,16 @@ def main():
 
             if "wl_df" in st.session_state and not st.session_state["wl_df"].empty:
                 wdf = st.session_state["wl_df"]
-                wl_show = [c for c in ["Ticker", "Price", "Trend", "Weekly Trend", "RSI", "EMA Pattern", "Squeeze",
-                                       "Trend Age", "💎 Gem", "Accum", "RS 20D",
-                                       "YTD%", "Drawdown%"]
-                           if c in wdf.columns]
+                if mobile_mode:
+                    wl_show = [c for c in ["Ticker", "Price", "Trend", "RSI"] if c in wdf.columns]
+                elif simple_mode:
+                    wl_show = [c for c in ["Ticker", "Price", "Trend", "RSI", "💎 Gem", "Accum"]
+                              if c in wdf.columns]
+                else:
+                    wl_show = [c for c in ["Ticker", "Price", "Trend", "Weekly Trend", "RSI", "EMA Pattern", "Squeeze",
+                                           "Trend Age", "💎 Gem", "Accum", "RS 20D",
+                                           "YTD%", "Drawdown%"]
+                               if c in wdf.columns]
                 wdf = wdf.copy()
                 if "Trend Age" in wdf.columns:
                     wdf["Trend Age"] = wdf["Trend Age"].apply(
@@ -3631,7 +3888,8 @@ def main():
                 wsmap = {"💎 Gem": _sty_gem, "RSI": _sty_rsi,
                          "Squeeze": _sty_squeeze, "RS 20D": _sty_rs, "Accum": _sty_generic,
                          "Weekly Trend": _sty_weekly}
-                st.dataframe(make_table(wdf[wl_show], wsmap),
+                wdf_th, wsmap_th = apply_thai_labels(wdf[wl_show], wsmap)
+                st.dataframe(make_table(wdf_th, wsmap_th),
                              use_container_width=True, height=400)
 
                 with st.expander("📈 Backtest ทุกตัวใน Watchlist"):
@@ -3646,7 +3904,9 @@ def main():
                                 "vs Buy&Hold%": round(r.get("strategy_compound_ret", 0) - r.get("buy_hold_ret", 0), 2)})
                     if bt_rows:
                         bt_df = pd.DataFrame(bt_rows)
-                        st.dataframe(make_table(bt_df, {"Win%": _sty_wr, "Avg Ret%": _sty_rs, "vs Buy&Hold%": _sty_rs}),
+                        bt_df_th, bt_smap_th = apply_thai_labels(
+                            bt_df, {"Win%": _sty_wr, "Avg Ret%": _sty_rs, "vs Buy&Hold%": _sty_rs})
+                        st.dataframe(make_table(bt_df_th, bt_smap_th),
                                      use_container_width=True)
 
 
