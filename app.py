@@ -2184,7 +2184,7 @@ import streamlit as st
 # กลางทาง จะไม่มีทางแยกออกว่าข้อมูลไหน "ก่อน/หลัง" การเปลี่ยนนั้น ตอนนี้ทำให้
 # เป็นค่าคงที่จริงในโค้ด แล้ว fetch_data.py stamp ค่านี้ลงไปในทุกไฟล์ JSON
 # ที่เซฟ (ดู fetch_data.py) เพื่อให้ข้อมูลในอนาคตกรองตาม version ได้เอง
-APP_VERSION = "3.26"
+APP_VERSION = "3.30"
 
 LIVE_SCAN_SAFETY_CAP = 100
 
@@ -2401,6 +2401,14 @@ def main():
                                 "ข้อมูลที่ดึงไว้ล่วงหน้าอัตโนมัติ (ค่าเริ่มต้นตอนเปิดแอป ไม่ต้องกดอะไร) "
                                 "จะแสดงครบทุกตัวใน Universe เสมอ ไม่ถูกจำกัดด้วยค่านี้")
 
+        # v3.28: สวิตช์ "โหมดมือถือ" ให้ผู้ใช้กดเปิดเอง — ไม่ใช่การตรวจจับ
+        # อุปกรณ์อัตโนมัติ (ทำแบบนั้นเสี่ยงกว่ามาก ทดสอบบนมือถือจริงในนี้
+        # ไม่ได้เลย ถ้าบั๊กจะพังทั้งแอปสำหรับทุกคน) ให้ผู้ใช้กดเลือกเองปลอดภัย
+        # กว่า ตารางจะเหลือแค่คอลัมน์ที่จำเป็นสุด ลดการเลื่อนซ้ายขวา
+        mobile_mode = st.checkbox("📱 โหมดมือถือ (คอลัมน์น้อยลง อ่านง่ายบนจอเล็ก)", value=False,
+                                  help="เหลือแค่ Ticker/Price/Support/Support Zone/MktCap ตัดคอลัมน์ที่ไม่จำเป็นออก "
+                                       "กดเปิดเองตอนใช้บนมือถือ ปิดกลับได้ตลอดเวลา")
+
         st.markdown("---")
         run_btn = st.button("🚀 Run Screener | สแกนสดเดี๋ยวนี้", use_container_width=True,
                             help="ปกติไม่ต้องกดเลย — ข้อมูลมาจากรอบดึงอัตโนมัติทุกวันหลังตลาดปิด อยู่แล้ว "
@@ -2540,6 +2548,41 @@ def main():
             st.sidebar.markdown(f'<div style="margin-top:4px;">{rows_html}</div>', unsafe_allow_html=True)
             if len(sup_df) > top_n_side:
                 st.sidebar.caption(f"อีก {len(sup_df) - top_n_side} ตัว — ดูครบในตารางหลัก")
+
+    # v3.30: ย้ายมาจากตารางหลัก (checkbox "กรองด่วน" เดิม) มาไว้ในไซด์บาร์แทน
+    # ตามที่ขอ — เป็นลิสต์กระชับใต้ "แนวรับ Top 10" (เรียงมูลค่า) อันบน แต่
+    # เรียงตาม Support Quality แทน ใช้เกณฑ์เดียวกับเดิม: อยู่ที่แนวรับจริง
+    # (ไม่ใช่แค่ใกล้) + Quality ≥6/10 — ยังคงไม่สร้างคะแนนรวมใหม่ ใช้ Support
+    # Quality ตัวเดียวที่มีเครื่องมือพิสูจน์จริงอยู่แล้ว (Backtester → Support
+    # Accuracy) ไม่ผูกกับ filter อื่นในตารางหลักเหมือนบล็อกแรก
+    if not df.empty and "Support" in df.columns and "Support Quality" in df.columns:
+        qual_df = df[(df["Support"] == "🟢 อยู่ที่แนวรับ") & (df["Support Quality"] >= 6)].copy()
+        if not qual_df.empty:
+            qual_df = qual_df.sort_values("Support Quality", ascending=False)
+            top_n_qual = 10
+            top_qual = qual_df.head(top_n_qual)
+            st.sidebar.markdown("---")
+            st.sidebar.markdown(f"### ⭐ แนวรับคุณภาพสูงสุด Top {len(top_qual)}")
+            st.sidebar.caption("อยู่ที่แนวรับจริง + Quality ≥6/10 · เรียงคุณภาพมาก→น้อย")
+            qual_rows_html = ""
+            for _, r in top_qual.iterrows():
+                px_r = r.get("Price", 0) or 0
+                q = r.get("Support Quality", 0) or 0
+                qual_rows_html += (
+                    f'<div style="display:flex;justify-content:space-between;align-items:center;'
+                    f'padding:5px 2px;border-bottom:1px solid #22344f;font-size:0.82rem;">'
+                    f'<span>⭐ <b style="color:#e8f0ff;">{r["Ticker"]}</b> '
+                    f'<span style="color:#5b7299;font-size:0.75rem;">${px_r:,.1f}</span></span>'
+                    f'<span style="color:#ffd76a;font-weight:700;">{q:.1f}/10</span>'
+                    f'</div>'
+                )
+            st.sidebar.markdown(f'<div style="margin-top:4px;">{qual_rows_html}</div>', unsafe_allow_html=True)
+            if len(qual_df) > top_n_qual:
+                st.sidebar.caption(f"อีก {len(qual_df) - top_n_qual} ตัว — ดูครบในตารางหลัก")
+            st.sidebar.caption("⚠️ ไม่ใช่คำแนะนำการลงทุน แค่ช่วยลดตัวเลือกให้ดูง่ายขึ้น")
+        else:
+            st.sidebar.markdown("---")
+            st.sidebar.caption("⭐ ยังไม่มีหุ้นที่เข้าเงื่อนไข Quality ≥6/10 ใน Universe นี้ตอนนี้")
 
     # ── แสดงสถานะ ──────────────────────────────────────
     if st.session_state.ran and not df.empty:
@@ -2710,12 +2753,24 @@ def main():
                                             ["🔴 อยู่ที่แนวต้าน", "🟠 ใกล้แนวต้าน"],
                                             default=[], key="d_res", placeholder="ทั้งหมด")
 
-            show_cols = [c for c in ["Ticker", "Price", "ราคาปิด", "Trend", "Weekly Trend", "RSI", "EMA Pattern",
-                                     "Squeeze", "Support", "Support Zone", "Support Dist%",
-                                     "Support Quality", "Support Touches",
-                                     "Resistance", "Resistance Zone", "Resistance Dist%",
-                                     "Trend Age", "💎 Gem", "Accum", "RS 20D", "MktCap$B", "Stars"]
-                         if c in df.columns]
+            # v3.27: ตัด Weekly Trend/EMA Pattern/Squeeze/RS 20D ออกตามที่ขอ
+            # (ลดความรก) — RS 20D ถูกใช้ปรับ Support Quality อยู่เบื้องหลัง
+            # แล้ว (v3.24) ไม่เสียข้อมูลจริงแม้ตัดคอลัมน์แสดงผลออก
+            #
+            # v3.28: โหมดมือถือ — เหลือแค่คอลัมน์ที่จำเป็นสุดสำหรับตัดสินใจซื้อ
+            # (Ticker/Price/Support/Support Zone/Support Dist%/MktCap) กดเปิด
+            # เองจากไซด์บาร์ ไม่ใช่ auto-detect
+            if mobile_mode:
+                show_cols = [c for c in ["Ticker", "Price", "Support", "Support Zone",
+                                         "Support Dist%", "MktCap$B"]
+                             if c in df.columns]
+            else:
+                show_cols = [c for c in ["Ticker", "Price", "ราคาปิด", "Trend", "RSI",
+                                         "Support", "Support Zone", "Support Dist%",
+                                         "Support Quality", "Support Touches",
+                                         "Resistance", "Resistance Zone", "Resistance Dist%",
+                                         "Trend Age", "💎 Gem", "Accum", "MktCap$B", "Stars"]
+                             if c in df.columns]
             dfv = df[show_cols].copy()
             if "Support Dist%" in dfv.columns:
                 dfv["Support Dist%"] = dfv["Support Dist%"].apply(
@@ -2763,10 +2818,9 @@ def main():
 
             dfv = dfv.sort_values(["_st", "_mc", "_sq"]).drop(columns=["_st", "_mc", "_sq"])
 
-            # v3.9: ลดคอลัมน์ที่ style จาก 9 เหลือ 4 เดิม (Signal/Support/Weekly Trend/Gem)
-            # — v3.21 ตัด Signal ออก เหลือ Support/Resistance/Weekly Trend/Gem
+            # v3.27: ตัด Weekly Trend ออกจาก style map ด้วย (คอลัมน์ไม่แสดงแล้ว)
             smap = {"💎 Gem": _sty_gem,
-                    "Support": _sty_support, "Resistance": _sty_resistance, "Weekly Trend": _sty_weekly}
+                    "Support": _sty_support, "Resistance": _sty_resistance}
             st.markdown(f"**{len(dfv)} หุ้นที่ตรงเงื่อนไข**")
             st.dataframe(make_table(dfv, smap, row_style_fn=_row_highlight_support),
                          use_container_width=True, height=520)
