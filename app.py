@@ -1869,6 +1869,31 @@ details summary:hover { color:var(--cyan) !important; }
 
 /* ── HIDE CHROME ── */
 #MainMenu, footer, .stDeployButton { display:none !important; }
+
+/* ── v3.37: จอแคบ (มือถือ) — ขยายพื้นที่แตะให้ใหญ่ขึ้น กันกดพลาด ──
+   ปรับแค่ปุ่ม/checkbox/แท็บ ไม่แตะโครงสร้างหลักเลย เป็น CSS ล้วนๆ
+   ต่อให้ผิดพลาดก็แค่หน้าตาไม่เปลี่ยน ไม่มีทางทำฟังก์ชันพัง */
+@media (max-width: 640px) {
+  .stButton > button, .stCheckbox > label, .stRadio > label {
+    min-height: 44px !important;
+    font-size: 1rem !important;
+  }
+  .stTabs [data-baseweb="tab"] {
+    min-height: 44px !important;
+    padding: 8px 14px !important;
+    font-size: 0.95rem !important;
+  }
+  .stTabs [data-baseweb="tab-list"] {
+    gap: 4px !important;
+  }
+  .stCheckbox input, .stRadio input {
+    width: 20px !important;
+    height: 20px !important;
+  }
+  .stSelectbox > div, .stMultiSelect > div {
+    min-height: 44px !important;
+  }
+}
 </style>
 """
 
@@ -2336,7 +2361,7 @@ import streamlit as st
 # กลางทาง จะไม่มีทางแยกออกว่าข้อมูลไหน "ก่อน/หลัง" การเปลี่ยนนั้น ตอนนี้ทำให้
 # เป็นค่าคงที่จริงในโค้ด แล้ว fetch_data.py stamp ค่านี้ลงไปในทุกไฟล์ JSON
 # ที่เซฟ (ดู fetch_data.py) เพื่อให้ข้อมูลในอนาคตกรองตาม version ได้เอง
-APP_VERSION = "3.36"
+APP_VERSION = "3.37"
 
 LIVE_SCAN_SAFETY_CAP = 100
 
@@ -2491,7 +2516,12 @@ st.set_page_config(
     page_title="Stock Screener Pro",
     page_icon="📊",
     layout="wide",
-    initial_sidebar_state="expanded",
+    # v3.37: เดิม "expanded" บังคับให้ sidebar เปิดค้างตอนโหลดหน้าแรกเสมอ ไม่ว่า
+    # จอจะเล็กแค่ไหน — บนมือถือแปลว่า sidebar บังเต็มจอทันทีที่เข้าเว็บ ต้อง
+    # กดปิดเองก่อนถึงจะเห็นอะไร (ตรงกับที่ user บอกว่า "sidebar บังหน้าจอเล็ก
+    # เกินไป") เปลี่ยนเป็น "auto" ให้ Streamlit ตัดสินใจเองตามความกว้างจอ —
+    # จอกว้าง (PC) ยังเปิดเหมือนเดิม จอแคบ (มือถือ) จะปิดให้อัตโนมัติ
+    initial_sidebar_state="auto",
 )
 inject_css()
 
@@ -2936,8 +2966,10 @@ def main():
                 df["Sector Bull%"] = df["Sector"].map(bull_map)
 
             if mobile_mode:
-                show_cols = [c for c in ["Ticker", "Price", "Support", "Support Zone",
-                                         "Support Dist%", "MktCap$B"]
+                # v3.37: ตัดให้เหลือน้อยที่สุดเท่าที่จะน้อยได้ ตามที่ขอตรงๆ
+                # (ราคาปิด/เปิด, โซนแนวรับ, เงื่อนไข) — เดิมยังมี Support Dist%/
+                # MktCap$B ซึ่งเกินความจำเป็นสำหรับโหมดนี้
+                show_cols = [c for c in ["Ticker", "Price", "ราคาปิด", "Support", "Support Zone"]
                              if c in df.columns]
             elif simple_mode:
                 # v3.36: แยกงาน "สแกนกว้าง" (Dashboard/Hidden Gems) ออกจากงาน
@@ -3024,8 +3056,25 @@ def main():
             # รู้สึกเลื่อนยาก/ติด) ตารางเตี้ยลงช่วยให้เห็นขอบตารางง่ายขึ้น
             # นิ้วจะรู้ว่ากำลังเลื่อนอะไรอยู่ชัดเจนกว่า
             tbl_height = 320 if mobile_mode else 520
-            st.dataframe(make_table(dfv_th, smap_th, row_style_fn=_row_highlight_support),
-                         use_container_width=True, height=tbl_height)
+            # v3.37: กดแตะแถวในตารางได้เลย — เลือกได้ทีละแถว (on_select ต้อง
+            # ใช้ Streamlit ≥1.35 ซึ่ง requirements.txt ตั้ง streamlit>=1.30.0
+            # ไว้แบบเปิดกว้าง แปลว่าเวอร์ชันที่ติดตั้งจริงตอน deploy ควรใหม่พอ
+            # อยู่แล้ว) แตะแถวไหน → เซฟ ticker นั้นไว้ให้แท็บ "เจาะลึกหุ้น"
+            # หยิบไปใช้ทันที ไม่ต้องพิมพ์/เลือกซ้ำเอง — Streamlit ไม่มีทาง
+            # สลับแท็บที่ active ให้จากโค้ดฝั่ง server ได้ (ข้อจำกัดจริงของ
+            # Streamlit ไม่ใช่บั๊ก) เลยทำได้แค่ "เตรียมไว้ให้" ไม่ใช่ "พาไปเลย"
+            # ยังต้องแตะแท็บเองอีกครั้ง แต่ไม่ต้องพิมพ์ชื่อหุ้นซ้ำแล้ว
+            ev = st.dataframe(make_table(dfv_th, smap_th, row_style_fn=_row_highlight_support),
+                              use_container_width=True, height=tbl_height,
+                              on_select="rerun", selection_mode="single-row", key="dash_tbl_select")
+            try:
+                sel_rows = ev.selection.rows if hasattr(ev, "selection") else ev["selection"]["rows"]
+            except Exception:
+                sel_rows = []
+            if sel_rows:
+                clicked_ticker = dfv.iloc[sel_rows[0]]["Ticker"]
+                st.session_state["dd_sel"] = clicked_ticker
+                st.info(f"✅ เลือก **{clicked_ticker}** แล้ว — แตะแท็บ 🔍 **เจาะลึกหุ้น** ด้านบนเพื่อดูรายละเอียด")
 
             if "Support Quality" in df.columns:
                 strong_sup = df[(df["Support"] != "—") & (df["Support Quality"] >= 6)]
@@ -3117,7 +3166,7 @@ def main():
             # กดโหมดมือถือแล้วแท็บนี้ยังกว้างเหมือนเดิม (เจอจาก user ส่งภาพ
             # มาให้ดู) แก้ให้เช็คเหมือนกันทุกแท็บที่มีตารางหลัก
             if mobile_mode:
-                gem_show = [c for c in ["Ticker", "Price", "💎 Gem", "Support"]
+                gem_show = [c for c in ["Ticker", "Price", "💎 Gem", "Support", "Support Zone"]
                            if c in df.columns]
             elif simple_mode:
                 # v3.36: เหมือน Dashboard — ตัดรายละเอียดเชิงตัดสินใจ (Gem
@@ -3184,6 +3233,13 @@ def main():
         st.markdown("### 🔍 วิเคราะห์รายตัว")
 
         pick_list = df["Ticker"].tolist() if not df.empty else tickers_use[:50]
+        # v3.37: กันพัง — ถ้า dd_sel ถูกตั้งไว้จากการแตะแถวใน Dashboard ตอน
+        # Universe หนึ่ง แล้วผู้ใช้สลับ Universe ก่อนมาเปิดแท็บนี้ ticker เดิม
+        # อาจไม่อยู่ใน pick_list ของ Universe ใหม่แล้ว — st.selectbox จะ error
+        # ทันทีถ้า session_state ค้างค่าที่ไม่อยู่ใน options ล้างค่าทิ้งก่อน
+        # ถ้าไม่อยู่ในลิสต์ปัจจุบัน กลับไปใช้ค่าเริ่มต้น (ตัวแรกในลิสต์) แทน
+        if "dd_sel" in st.session_state and st.session_state["dd_sel"] not in pick_list:
+            del st.session_state["dd_sel"]
         d1, d2, d3 = st.columns([3, 1, 1])
         with d1:
             sel = st.selectbox("เลือกหุ้น | Select Ticker", pick_list, key="dd_sel")
@@ -3872,7 +3928,7 @@ def main():
             if "wl_df" in st.session_state and not st.session_state["wl_df"].empty:
                 wdf = st.session_state["wl_df"]
                 if mobile_mode:
-                    wl_show = [c for c in ["Ticker", "Price", "Trend", "RSI"] if c in wdf.columns]
+                    wl_show = [c for c in ["Ticker", "Price", "Support", "Support Zone"] if c in wdf.columns]
                 elif simple_mode:
                     wl_show = [c for c in ["Ticker", "Price", "Trend", "RSI", "💎 Gem", "Accum"]
                               if c in wdf.columns]
