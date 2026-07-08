@@ -2361,7 +2361,7 @@ import streamlit as st
 # กลางทาง จะไม่มีทางแยกออกว่าข้อมูลไหน "ก่อน/หลัง" การเปลี่ยนนั้น ตอนนี้ทำให้
 # เป็นค่าคงที่จริงในโค้ด แล้ว fetch_data.py stamp ค่านี้ลงไปในทุกไฟล์ JSON
 # ที่เซฟ (ดู fetch_data.py) เพื่อให้ข้อมูลในอนาคตกรองตาม version ได้เอง
-APP_VERSION = "3.38"
+APP_VERSION = "3.39"
 
 LIVE_SCAN_SAFETY_CAP = 100
 
@@ -3043,61 +3043,72 @@ def main():
 
             dfv = dfv.sort_values(["_st", "_mc", "_sq"]).drop(columns=["_st", "_mc", "_sq"])
 
-            # v3.31: เพิ่ม style ระดับ (Tier) เข้าไปด้วย
-            smap = {"💎 Gem": _sty_gem,
-                    "Support": _sty_support, "Resistance": _sty_resistance, "ระดับ": _sty_tier}
-            st.markdown(f"**{len(dfv)} หุ้นที่ตรงเงื่อนไข**")
-            # v3.32: rename เป็น "English | ไทย" ตอนแสดงผลจริงเท่านั้น (ขั้นตอน
-            # สุดท้ายก่อน dataframe เสมอ — sort/filter/style ด้านบนทั้งหมดใช้
-            # ชื่อคอลัมน์เดิมตามปกติ ไม่ถูกกระทบ)
-            dfv_th, smap_th = apply_thai_labels(dfv, smap)
-            # v3.35: ลดความสูงตารางลงตอนโหมดมือถือ — ตารางสูงเกินจอมือถือทำให้
-            # เกิด "scroll ซ้อน scroll" (เลื่อนในตาราง vs เลื่อนทั้งหน้า ชนกัน
-            # รู้สึกเลื่อนยาก/ติด) ตารางเตี้ยลงช่วยให้เห็นขอบตารางง่ายขึ้น
-            # นิ้วจะรู้ว่ากำลังเลื่อนอะไรอยู่ชัดเจนกว่า
-            tbl_height = 320 if mobile_mode else 520
-            # v3.37: กดแตะแถวในตารางได้เลย — เลือกได้ทีละแถว (on_select ต้อง
-            # ใช้ Streamlit ≥1.35 ซึ่ง requirements.txt ตั้ง streamlit>=1.30.0
-            # ไว้แบบเปิดกว้าง แปลว่าเวอร์ชันที่ติดตั้งจริงตอน deploy ควรใหม่พอ
-            # อยู่แล้ว) แตะแถวไหน → เซฟ ticker นั้นไว้ให้แท็บ "เจาะลึกหุ้น"
-            # หยิบไปใช้ทันที ไม่ต้องพิมพ์/เลือกซ้ำเอง — Streamlit ไม่มีทาง
-            # สลับแท็บที่ active ให้จากโค้ดฝั่ง server ได้ (ข้อจำกัดจริงของ
-            # Streamlit ไม่ใช่บั๊ก) เลยทำได้แค่ "เตรียมไว้ให้" ไม่ใช่ "พาไปเลย"
-            # ยังต้องแตะแท็บเองอีกครั้ง แต่ไม่ต้องพิมพ์ชื่อหุ้นซ้ำแล้ว
-            ev = st.dataframe(make_table(dfv_th, smap_th, row_style_fn=_row_highlight_support),
-                              use_container_width=True, height=tbl_height,
-                              on_select="rerun", selection_mode="single-row", key="dash_tbl_select")
-            try:
-                sel_rows = ev.selection.rows if hasattr(ev, "selection") else ev["selection"]["rows"]
-            except Exception:
-                sel_rows = []
-            if sel_rows:
-                clicked_ticker = dfv.iloc[sel_rows[0]]["Ticker"]
-                st.session_state["dd_sel"] = clicked_ticker
-                st.info(f"✅ เลือก **{clicked_ticker}** แล้ว — แตะแท็บ 🔍 **เจาะลึกหุ้น** ด้านบนเพื่อดูรายละเอียด")
-
+            # ════════════════════════════════════════════════════════
+            # v3.39: การ์ดสรุป "ตัวเด่นวันนี้" ก่อน — ตามที่ตัดสินใจ (ทางเลือก A)
+            # ย้ายเนื้อหาจาก expander "แนวรับคุณภาพสูง" (เดิมอยู่ใต้ตารางเต็ม)
+            # มาไว้บนสุดแทน ในรูปแบบการ์ดที่เห็นง่ายใน 3 วินาที ไม่ต้องเลื่อน
+            # หาในตารางยาวๆอีกต่อไป — ใช้เกณฑ์เดิมเป๊ะ (อยู่ที่แนวรับจริง +
+            # Quality ≥6/10) ไม่สร้างคะแนนใหม่ ตารางเต็มพับเก็บไว้ใน expander
+            # ด้านล่างสำหรับคนที่อยากดูครบทุกตัวจริงๆ
+            # ════════════════════════════════════════════════════════
+            st.markdown("### 🎯 ตัวเด่นวันนี้")
             if "Support Quality" in df.columns:
-                strong_sup = df[(df["Support"] != "—") & (df["Support Quality"] >= 6)]
-                if not strong_sup.empty:
-                    with st.expander(f"🟢 หุ้นที่อยู่ที่แนวรับ/ใกล้แนวรับ **คุณภาพสูง** (≥6/10) — {len(strong_sup)} ตัว"):
-                        st.caption("คุณภาพสูง = ผ่านการทดสอบหลายครั้ง + มี volume ยืนยันตอนเด้งกลับ "
-                                  "และ/หรือมีแนวรับซ้อนกันจากหลายวิธีคำนวณ (Confluence)")
-                        strong_cols = [c for c in ["Ticker", "Price", "Support", "Support Zone",
-                                                    "Support Dist%", "Support Quality", "Support Touches",
-                                                    "Support Vol Confirmed", "Support Confluence"]
-                                       if c in strong_sup.columns]
-                        strong_view = strong_sup[strong_cols].copy().sort_values("Support Quality", ascending=False)
-                        strong_view["Support Dist%"] = strong_view["Support Dist%"].apply(lambda x: f"+{x:.1f}%")
-                        strong_view["Support Quality"] = strong_view["Support Quality"].apply(lambda x: f"{x:.1f}/10")
-                        strong_view["Support Touches"] = strong_view["Support Touches"].apply(lambda x: f"{int(x)}x")
-                        if "Support Vol Confirmed" in strong_view.columns:
-                            strong_view["Support Vol Confirmed"] = strong_view["Support Vol Confirmed"].apply(
-                                lambda x: "✅ มี" if x else "—")
-                        if "Support Confluence" in strong_view.columns:
-                            strong_view["Support Confluence"] = strong_view["Support Confluence"].apply(
-                                lambda x: "✅ ซ้อนกัน" if x else "—")
-                        st.dataframe(make_table(*apply_thai_labels(strong_view, {"Support": _sty_support})),
-                                     use_container_width=True, height=min(400, 50 + len(strong_view) * 36))
+                top_pick_df = df[(df["Support"] == "🟢 อยู่ที่แนวรับ") & (df["Support Quality"] >= 6)].copy()
+                top_pick_df = top_pick_df.sort_values("Support Quality", ascending=False).head(8)
+            else:
+                top_pick_df = pd.DataFrame()
+
+            if top_pick_df.empty:
+                st.info("ยังไม่มีหุ้นที่เข้าเงื่อนไขคุณภาพสูง (อยู่ที่แนวรับจริง + Quality ≥6/10) ใน Universe นี้ตอนนี้ "
+                        "— ลองดูตารางทั้งหมดด้านล่าง หรือเปลี่ยน Universe/Sector")
+            else:
+                n_cols = 1 if mobile_mode else 4
+                rows_needed = (len(top_pick_df) + n_cols - 1) // n_cols
+                pick_idx = 0
+                for _r in range(rows_needed):
+                    cols = st.columns(n_cols)
+                    for c in cols:
+                        if pick_idx >= len(top_pick_df):
+                            break
+                        prow = top_pick_df.iloc[pick_idx]
+                        with c:
+                            with st.container(border=True):
+                                tier_lbl = support_tier(prow["Support Quality"])
+                                zone_lbl = prow.get("Support Zone", "—") or "—"
+                                st.markdown(f"**{prow['Ticker']}** · ${prow['Price']:,.2f}")
+                                st.caption(f"โซนแนวรับ: {zone_lbl}")
+                                st.markdown(tier_lbl)
+                                if st.button("ดูรายละเอียด →", key=f"card_btn_{prow['Ticker']}_{pick_idx}",
+                                            use_container_width=True):
+                                    st.session_state["dd_sel"] = prow["Ticker"]
+                                    st.info(f"✅ เลือก **{prow['Ticker']}** แล้ว — แตะแท็บ 🔍 "
+                                           f"**เจาะลึกหุ้น** ด้านบนเพื่อดูรายละเอียด")
+                        pick_idx += 1
+
+            st.markdown("---")
+            with st.expander(f"📊 ดูหุ้นทั้งหมด ({len(dfv)} ตัว)", expanded=False):
+                # v3.31: เพิ่ม style ระดับ (Tier) เข้าไปด้วย
+                smap = {"💎 Gem": _sty_gem,
+                        "Support": _sty_support, "Resistance": _sty_resistance, "ระดับ": _sty_tier}
+                # v3.32: rename เป็น "English | ไทย" ตอนแสดงผลจริงเท่านั้น (ขั้นตอน
+                # สุดท้ายก่อน dataframe เสมอ — sort/filter/style ด้านบนทั้งหมดใช้
+                # ชื่อคอลัมน์เดิมตามปกติ ไม่ถูกกระทบ)
+                dfv_th, smap_th = apply_thai_labels(dfv, smap)
+                # v3.35: ลดความสูงตารางลงตอนโหมดมือถือ
+                tbl_height = 320 if mobile_mode else 520
+                # v3.37: กดแตะแถวในตารางได้เลย — เลือกได้ทีละแถว แตะแถวไหน →
+                # เซฟ ticker นั้นไว้ให้แท็บ "เจาะลึกหุ้น" หยิบไปใช้ทันที
+                ev = st.dataframe(make_table(dfv_th, smap_th, row_style_fn=_row_highlight_support),
+                                  use_container_width=True, height=tbl_height,
+                                  on_select="rerun", selection_mode="single-row", key="dash_tbl_select")
+                try:
+                    sel_rows = ev.selection.rows if hasattr(ev, "selection") else ev["selection"]["rows"]
+                except Exception:
+                    sel_rows = []
+                if sel_rows:
+                    clicked_ticker = dfv.iloc[sel_rows[0]]["Ticker"]
+                    st.session_state["dd_sel"] = clicked_ticker
+                    st.info(f"✅ เลือก **{clicked_ticker}** แล้ว — แตะแท็บ 🔍 **เจาะลึกหุ้น** ด้านบนเพื่อดูรายละเอียด")
 
             st.markdown("---")
             wl_col1, wl_col2 = st.columns([3, 1])
