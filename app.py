@@ -505,7 +505,7 @@ TICKER_TO_SECTOR = {tk: sector for sector, tickers in SECTOR_MAP.items() for tk 
 # บังเอิญมีข้อมูลครบ" มากกว่า "100 ตัวที่ดีที่สุดจริง" — กลับไปใช้
 # Russell 2000 Small Cap / US Broad Market แบบเดิม (รายชื่อคงที่ ไม่คัดกรอง
 # อัตโนมัติ แต่อย่างน้อยไม่มี bias จากข้อมูลที่หายไม่เท่ากัน)
-GITHUB_REPO = "bigpk2002/BANNVICH01"
+GITHUB_REPO = "bigpk2002/BIGPK"
 RELEASE_TAG = "latest-data"
 
 UNIVERSE_OPTIONS = {
@@ -2361,7 +2361,7 @@ import streamlit as st
 # กลางทาง จะไม่มีทางแยกออกว่าข้อมูลไหน "ก่อน/หลัง" การเปลี่ยนนั้น ตอนนี้ทำให้
 # เป็นค่าคงที่จริงในโค้ด แล้ว fetch_data.py stamp ค่านี้ลงไปในทุกไฟล์ JSON
 # ที่เซฟ (ดู fetch_data.py) เพื่อให้ข้อมูลในอนาคตกรองตาม version ได้เอง
-APP_VERSION = "3.37"
+APP_VERSION = "3.38"
 
 LIVE_SCAN_SAFETY_CAP = 100
 
