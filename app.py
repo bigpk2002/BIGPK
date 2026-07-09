@@ -490,6 +490,7 @@ SECTOR_MAP = {
     "🎮 Gaming/Streaming | เกม/สตรีมมิ่ง": ["NFLX","DIS","RBLX","EA","TTWO","NTDOY","SONY","SPOT","PARA","WBD","ATVI","U","RICK","GME","HUYA","DOYU"],
     "🔒 Crypto/Cyber | คริปโต/ไซเบอร์": ["COIN","MSTR","MARA","RIOT","HUT","CLSK","BITF","CRWD","PANW","ZS","FTNT","OKTA","S","NET","CYBR","TENB"],
     "🏠 REIT | กองทุนอสังหา":         ["O","PLD","AMT","EQIX","PSA","DLR","SPG","AVB","EQR","WELL","VTR","ARE","BXP","KIM","REG","IIPR"],
+    "🖥️ AI Datacenter | ศูนย์ข้อมูล AI": ["VRT","CEG","VST","TLN","NRG","GEV","MOD","SMCI","PWR","ANET","CIEN","DELL","HPE","IRM","COHR","APLD"],
 }
 
 # v3.31 ข้อ 4: reverse lookup ticker → sector — ใช้บอกบริบทว่าหุ้นตัวนี้อยู่
@@ -1826,6 +1827,18 @@ section[data-testid="stSidebar"] div { color:var(--text) !important; }
 .stSelectbox [data-baseweb="select"]:focus-within > div,
 .stMultiSelect [data-baseweb="select"]:focus-within > div { border-color:var(--cyan) !important; }
 .stSelectbox span, .stMultiSelect span { color:var(--text) !important; }
+
+/* ── v3.41: ปรับ "pill" ของตัวเลือกที่เลือกไว้ (เช่น หมวดหุ้นที่เลือก) ให้
+   เข้าธีมไซเบอร์พังก์ของแอป (ไล่สีฟ้า-ม่วง + เรืองแสงบางๆ) แทนสีเขียว
+   default ธรรมดาของ Streamlit — CSS ล้วนๆ ปลอดภัย ไม่กระทบฟังก์ชันใดๆ ──*/
+[data-baseweb="tag"] {
+    background:linear-gradient(90deg, rgba(45,226,230,0.22), rgba(182,107,255,0.22)) !important;
+    border:1px solid var(--cyan) !important;
+    border-radius:6px !important;
+    box-shadow:0 0 6px rgba(45,226,230,0.25) !important;
+}
+[data-baseweb="tag"] span { color:var(--text) !important; font-weight:600 !important; }
+[data-baseweb="tag"] svg { fill:var(--cyan) !important; }
 .stTextArea textarea, .stTextInput input {
     background:var(--panel2) !important; color:var(--text) !important; border-color:var(--line2) !important;
     border-radius:5px !important; font-family:'Share Tech Mono',monospace !important;
@@ -2361,7 +2374,7 @@ import streamlit as st
 # กลางทาง จะไม่มีทางแยกออกว่าข้อมูลไหน "ก่อน/หลัง" การเปลี่ยนนั้น ตอนนี้ทำให้
 # เป็นค่าคงที่จริงในโค้ด แล้ว fetch_data.py stamp ค่านี้ลงไปในทุกไฟล์ JSON
 # ที่เซฟ (ดู fetch_data.py) เพื่อให้ข้อมูลในอนาคตกรองตาม version ได้เอง
-APP_VERSION = "3.40"
+APP_VERSION = "3.41"
 
 LIVE_SCAN_SAFETY_CAP = 100
 
