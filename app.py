@@ -2361,7 +2361,7 @@ import streamlit as st
 # กลางทาง จะไม่มีทางแยกออกว่าข้อมูลไหน "ก่อน/หลัง" การเปลี่ยนนั้น ตอนนี้ทำให้
 # เป็นค่าคงที่จริงในโค้ด แล้ว fetch_data.py stamp ค่านี้ลงไปในทุกไฟล์ JSON
 # ที่เซฟ (ดู fetch_data.py) เพื่อให้ข้อมูลในอนาคตกรองตาม version ได้เอง
-APP_VERSION = "3.39"
+APP_VERSION = "3.40"
 
 LIVE_SCAN_SAFETY_CAP = 100
 
@@ -2854,7 +2854,14 @@ def main():
                 🚀 Run Screener เพื่อดึงสดเองครั้งนี้</p>
             </div>""", unsafe_allow_html=True)
         elif df.empty:
-            st.error("⚠️ ไม่พบข้อมูล — ลองกด 🚀 Run Screener เพื่อดึงสด หรือตรวจสอบ Ticker/อินเทอร์เน็ต")
+            # v3.40 BUG FIX: เดิมข้อความนี้ขึ้นซ้ำกับ warning ด้านบนสุด (ก่อน
+            # tabs ทั้งหมด ที่เช็ค "bundle_gen_at" อยู่แล้ว) เวลา df ว่างเปล่า
+            # เพราะเงื่อนไข "ran และ df.empty" ตรงกันทั้งคู่ ทำให้เห็นข้อความ
+            # เตือนซ้อนกัน 2 อันพร้อมกัน (เจอจากภาพที่ user ส่งมา) — ถ้า
+            # bundle_gen_at มีอยู่แล้ว (แปลว่า warning บนสุดขึ้นไปแล้ว พร้อม
+            # บริบทที่เจาะจงกว่า) ข้ามข้อความนี้ไปเลย ไม่ต้องซ้ำ
+            if not bundle_gen_at:
+                st.error("⚠️ ไม่พบข้อมูล — ลองกด 🚀 Run Screener เพื่อดึงสด หรือตรวจสอบ Ticker/อินเทอร์เน็ต")
         else:
             total = len(df)
             bulls = len(df[df["Trend"].str.contains("Bull", na=False)])
