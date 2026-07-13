@@ -491,6 +491,11 @@ SECTOR_MAP = {
     "🔒 Crypto/Cyber | คริปโต/ไซเบอร์": ["COIN","MSTR","MARA","RIOT","HUT","CLSK","BITF","CRWD","PANW","ZS","FTNT","OKTA","S","NET","CYBR","TENB"],
     "🏠 REIT | กองทุนอสังหา":         ["O","PLD","AMT","EQIX","PSA","DLR","SPG","AVB","EQR","WELL","VTR","ARE","BXP","KIM","REG","IIPR"],
     "🖥️ AI Datacenter | ศูนย์ข้อมูล AI": ["VRT","CEG","VST","TLN","NRG","GEV","MOD","SMCI","PWR","ANET","CIEN","DELL","HPE","IRM","COHR","APLD"],
+    # v3.44: เพิ่มตามที่ขอ (ควอนตัม) + อีก 2 หมวดที่เช็คแล้วว่าขาดไปจริง —
+    # ทุกตัวตรวจสอบแล้วว่าไม่ซ้ำกับ 20 หมวดเดิม (308 ticker) เลยสักตัว
+    "⚛️ Quantum Computing | ควอนตัมคอมพิวติ้ง": ["IONQ","RGTI","QBTS","QUBT","ARQQ","LAES"],
+    "🛡️ Defense/Aerospace | ป้องกันประเทศ/อากาศยาน": ["GD","LHX","TXT","HII","BAH"],
+    "☢️ Nuclear/SMR | นิวเคลียร์/เครื่องปฏิกรณ์ขนาดเล็ก": ["SMR","OKLO","BWXT","LEU","UEC","CCJ","UUUU"],
 }
 
 # v3.31 ข้อ 4: reverse lookup ticker → sector — ใช้บอกบริบทว่าหุ้นตัวนี้อยู่
@@ -2374,7 +2379,7 @@ import streamlit as st
 # กลางทาง จะไม่มีทางแยกออกว่าข้อมูลไหน "ก่อน/หลัง" การเปลี่ยนนั้น ตอนนี้ทำให้
 # เป็นค่าคงที่จริงในโค้ด แล้ว fetch_data.py stamp ค่านี้ลงไปในทุกไฟล์ JSON
 # ที่เซฟ (ดู fetch_data.py) เพื่อให้ข้อมูลในอนาคตกรองตาม version ได้เอง
-APP_VERSION = "3.41"
+APP_VERSION = "3.44"
 
 LIVE_SCAN_SAFETY_CAP = 100
 
@@ -3284,6 +3289,34 @@ def main():
             row = None
             if not df.empty and sel in df["Ticker"].values:
                 row = df[df["Ticker"] == sel].iloc[0].to_dict()
+
+            # v3.43 BUG FIX: เดิมถ้า row เป็น None (ticker ไม่ได้อยู่ในข้อมูลที่
+            # วิเคราะห์ไว้แล้ว — พบบ่อยกับ Custom Tickers ที่ยังไม่เคยกด Run
+            # Screener) หน้าจะเงียบหายไปเฉยๆ ไม่มีคำอธิบายเลยว่าทำไม Support/
+            # Resistance/Position Sizing/Accumulation Plan/Technical Detail
+            # ถึงไม่โผล่มา (เจอจาก user ส่งภาพมาให้ดูว่า "ดึงข้อมูลไม่ขึ้น
+            # ไม่มีอะไรเลย") เหลือแค่กราฟ TradingView กับปุ่มดึงราคาสดที่ไม่ได้
+            # พึ่ง row เลย ทำให้ดูเหมือนหน้าเว็บพังทั้งที่จริงๆแค่ยังไม่ได้
+            # วิเคราะห์ ticker ตัวนี้ — เพิ่มข้อความอธิบายชัดเจน + ทางแก้ตรงๆ
+            if row is None:
+                st.warning(f"⚠️ ยังไม่มีข้อมูลวิเคราะห์ (Support/Resistance/Position Sizing ฯลฯ) "
+                          f"สำหรับ **{sel}** เพราะ ticker นี้ไม่ได้อยู่ใน Universe ที่ดึงไว้ล่วงหน้า "
+                          f"(พบบ่อยกับ Custom Tickers) — ยังดูกราฟราคา + ราคาสดด้านล่างได้ตามปกติ")
+                # v3.43: แทนที่จะบอกให้ไปกด Run Screener (สแกนทั้ง Universe
+                # ทั้งที่อยากดูแค่ตัวเดียว) — วิเคราะห์แค่ ticker นี้ตัวเดียว
+                # ตรงนี้เลย เร็วกว่ามาก (ไม่ต้องรอสแกนหลายร้อยตัว)
+                if st.button(f"🔍 วิเคราะห์ {sel} เดี๋ยวนี้ (ตัวเดียว เร็วกว่าสแกนทั้ง Universe)",
+                            key="dd_analyze_now"):
+                    with st.spinner(f"กำลังวิเคราะห์ {sel}…"):
+                        try:
+                            row = analyze(sel, bench_tuple=bench_tuple)
+                        except Exception as e:
+                            row = None
+                            st.error(f"วิเคราะห์ {sel} ไม่สำเร็จ: {e} — ตรวจสอบว่าพิมพ์ ticker ถูกต้องไหม "
+                                    f"(เช่น หุ้นไทยต้องมี .BK ต่อท้าย)")
+                    if row:
+                        st.success(f"✅ วิเคราะห์ {sel} สำเร็จ! (ผลนี้ยังไม่ถูกบันทึกลง Universe หลัก "
+                                  f"— แค่แสดงผลชั่วคราวสำหรับหน้านี้เท่านั้น)")
 
             if row:
                 px_now = row.get("Price", 0)
