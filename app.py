@@ -59,12 +59,7 @@ logger = logging.getLogger("screener")
 #   • to_date_indexed() — (ใหม่ใน v3.0) ใช้ normalize index ของราคาให้เป็น
 #     "วันที่" ล้วน (ไม่มี time/timezone) สำหรับเทียบ 2 ซีรีส์ที่มาจาก
 #     ตลาดคนละ timezone/ปฏิทินวันเทรด (เช่นหุ้นไทย .BK เทียบกับ SPY สหรัฐฯ)
-import logging
-import random
-import time
-from functools import wraps
 
-import pandas as pd
 
 logging.basicConfig(
     level=logging.WARNING,
@@ -143,14 +138,8 @@ def to_date_indexed(s: pd.Series) -> pd.Series:
 # (filesystem ของ container ถูกสร้างใหม่ทั้งหมด) ถ้าต้องการ persistence แบบ
 # ถาวร 100% ข้าม deploy ต้องต่อ external storage (Google Sheets/Supabase/S3)
 # ซึ่งเป็นข้อจำกัดของแพลตฟอร์ม ไม่ใช่ของโค้ดส่วนนี้
-import datetime
-import hashlib
-import json
-import os
 from typing import Optional
-from zoneinfo import ZoneInfo
 
-import pandas as pd
 
 
 CACHE_DIR = os.path.join(
@@ -164,15 +153,6 @@ WATCHLIST_PATH = os.path.join(CACHE_DIR, "watchlist.json")
 # ─────────────────────────────────────────────────────────────
 # SCAN-RESULT CACHE (เหมือน v2.0)
 # ─────────────────────────────────────────────────────────────
-def _next_refresh_time(now: datetime.datetime) -> datetime.datetime:
-    bkk = ZoneInfo("Asia/Bangkok")
-    now_bkk = now.astimezone(bkk)
-    cutoff_today = now_bkk.replace(hour=4, minute=0, second=0, microsecond=0)
-    if now_bkk >= cutoff_today:
-        return cutoff_today
-    return cutoff_today - datetime.timedelta(days=1)
-
-
 def cache_key(universe: str, tickers: tuple, period: str, interval: str) -> str:
     raw = f"{universe}|{period}|{interval}|{','.join(sorted(tickers))}"
     h = hashlib.md5(raw.encode()).hexdigest()[:10]
@@ -180,24 +160,12 @@ def cache_key(universe: str, tickers: tuple, period: str, interval: str) -> str:
     return f"{safe_name}_{h}"
 
 
-def load_disk_cache(universe: str, tickers: tuple, period: str, interval: str) -> Optional[pd.DataFrame]:
-    key = cache_key(universe, tickers, period, interval)
-    path = os.path.join(CACHE_DIR, f"{key}.json")
-    if not os.path.exists(path):
-        return None
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            payload = json.load(f)
-        saved_at = datetime.datetime.fromisoformat(payload["saved_at"])
-        cutoff = _next_refresh_time(datetime.datetime.now(ZoneInfo("Asia/Bangkok")))
-        if saved_at < cutoff:
-            return None
-        return pd.DataFrame(payload["data"])
-    except Exception as e:
-        log_err(f"load_disk_cache({universe})", e)
-        return None
-
-
+# v3.45: ลบ load_disk_cache() ทิ้ง — ตรวจสอบด้วย static analysis แล้วว่าไม่มี
+# ที่ไหนเรียกใช้เลยทั้งไฟล์ (เขียนไว้ตั้งแต่ยุคก่อน v3.2 ที่เปลี่ยนมาใช้ระบบ
+# auto-load จาก prefetched bundle เป็นหลัก — เส้นทางอ่าน cache กลับมาใช้ถูก
+# เลิกใช้ไปตั้งแต่ตอนนั้น แต่ไม่มีใครลบฟังก์ชันทิ้ง) save_disk_cache() ยังใช้
+# อยู่จริง (ให้ cache_age_label() อ่าน metadata ไปโชว์ "สแกนล่าสุดกี่นาทีที่
+# แล้ว") เก็บไว้ตามเดิม ไม่ได้ลบ
 def save_disk_cache(universe: str, tickers: tuple, period: str, interval: str, df: pd.DataFrame) -> None:
     key = cache_key(universe, tickers, period, interval)
     path = os.path.join(CACHE_DIR, f"{key}.json")
@@ -318,8 +286,6 @@ def check_losing_streak(log: list, threshold: int = 3) -> int:
 # MODULE — UNIVERSE FETCHERS
 # ย้ายมาจาก v2.0 ตรงๆ ไม่มีบั๊กในส่วนนี้ที่ต้องแก้ไข เปลี่ยนแค่ตำแหน่งไฟล์
 # เพื่อให้ app.py หลักไม่ต้องยาว 1,500+ บรรทัดในไฟล์เดียว
-import streamlit as st
-import pandas as pd
 
 
 
@@ -546,8 +512,6 @@ def resolve_tickers(universe: str, sector_choice: list, custom_input: str) -> li
 # MODULE — MATH ENGINE
 # ทุกฟังก์ชันเหมือน v2.0 เดิม ยกเว้น relative_strength() ที่แก้บั๊กการเทียบวันที่
 # (ดู docstring ของฟังก์ชันนั้นสำหรับรายละเอียด)
-import numpy as np
-import pandas as pd
 
 
 
@@ -1133,14 +1097,7 @@ def conservative_stars(price, e200, rsi, vol20, drawdown) -> str:
 #      ทีละตัว + sleep คงที่ — ช้าและไม่จำเป็น เพราะงานนี้เป็น I/O-bound)
 #   5. relative_strength เรียกด้วยซีรีส์ที่มี date index จริง (ดู indicators.py)
 #      แทนการส่ง tuple ของค่าดิบที่ไม่มีวันที่กำกับ
-import datetime
-from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import Callable, Optional
 
-import numpy as np
-import pandas as pd
-import streamlit as st
-import yfinance as yf
 
 
 
@@ -1422,10 +1379,6 @@ def fetch_live(ticker: str) -> dict:
 #   • Sharpe คำนวณจาก distribution ของ trade returns ไม่ใช่ daily returns
 #     แบบเข้มงวด ถือเป็นค่าประมาณ ไม่ใช่ Sharpe ที่ใช้เทียบกับกองทุนจริงได้
 #   • กลยุทธ์เดียว ผลย้อนหลังไม่ใช่การันตีผลในอนาคต ไม่ใช่คำแนะนำการลงทุน
-import numpy as np
-import pandas as pd
-import streamlit as st
-import yfinance as yf
 
 
 BACKTEST_NOTES = (
@@ -1533,20 +1486,10 @@ SUPPORT_BACKTEST_SAMPLE = (
 )
 
 
-def _wilder_rsi_series(prices: pd.Series, period: int = 14) -> pd.Series:
-    """RSI แบบคำนวณทุกวัน (rolling) ไม่ใช่แค่ค่าวันล่าสุดแบบ wilder_rsi() เดิม
-    — ใช้ EWM (alpha=1/period) ซึ่งให้ผลลัพธ์เท่ากับ Wilder smoothing แบบ
-    iterative หลังพ้นช่วง seed ต้นๆไปแล้ว (ใช้ backtest จากแท่งที่ 200 เป็นต้น
-    ไป จึงไม่กระทบความถูกต้อง)"""
-    d = prices.diff()
-    g = d.clip(lower=0)
-    l = (-d).clip(lower=0)
-    ag = g.ewm(alpha=1 / period, adjust=False).mean()
-    al = l.ewm(alpha=1 / period, adjust=False).mean()
-    rs = ag / al.replace(0, np.nan)
-    return (100 - 100 / (1 + rs)).fillna(100)
-
-
+# v3.45: ลบ _wilder_rsi_series() ทิ้ง — เป็นเศษที่เหลือจาก _signal_history_
+# for_ticker() เวอร์ชันเก่า (ก่อน v3.21 ตัด Signal ออก) ที่เคยต้องคำนวณ RSI
+# rolling ทั้งเส้นสำหรับ backtest สัญญาณ — พอเปลี่ยนเป็น _support_history_
+# for_ticker() ที่ไม่ใช้ RSI เลย ฟังก์ชันนี้เลยไม่มีใครเรียกอีกต่อไป
 def _support_history_for_ticker(ticker: str) -> pd.DataFrame:
     """
     v3.21: เดิมฟังก์ชันนี้ (_signal_history_for_ticker) คำนวณทั้ง Signal
@@ -1704,7 +1647,6 @@ def backtest_support_accuracy(sample: tuple = SUPPORT_BACKTEST_SAMPLE) -> dict:
 # ════════════════════════════════════════════════════════
 # MODULE — STYLES & UI HELPERS
 # ย้ายมาจาก v2.0 ตรงๆ (CSS theme, dataframe style functions, info_card)
-import streamlit as st
 
 CSS_BLOCK = """
 <style>
@@ -1951,15 +1893,8 @@ def _sty_rsi(v):
     return "color:#e8f0ff;"
 
 
-def _sty_pct(v):
-    try:
-        f = float(str(v).replace("%", "").replace("+", ""))
-        if f > 2: return "color:#34f5a4;font-weight:600;"
-        if f < -2: return "color:#ff3864;font-weight:600;"
-    except Exception:
-        pass
-    return "color:#5b7299;"
-
+# v3.45: ลบ _sty_pct() ทิ้ง — ไม่มีคอลัมน์ไหนในตารางทั้งแอปเรียกใช้ style
+# function นี้เลย (เศษที่เหลือจากคอลัมน์ % ที่ถูกตัด/เปลี่ยนไปในรอบก่อนๆ)
 
 def _sty_gem(v):
     v = str(v)
@@ -2265,7 +2200,6 @@ def render_animated_metric_cards(cards: list, height: int = 180) -> None:
 
 
 def tv_chart(ticker: str, height: int = 620, interval: str = "D") -> None:
-    import streamlit.components.v1 as components
 
     nyse = {"JPM", "JNJ", "V", "PG", "UNH", "HD", "MA", "DIS", "BAC", "XOM", "CVX", "WMT",
             "KO", "PFE", "MRK", "T", "VZ", "IBM", "GE", "GM", "F", "GS", "MS", "C", "WFC"}
@@ -2298,9 +2232,6 @@ def tv_chart(ticker: str, height: int = 620, interval: str = "D") -> None:
 # [merged from lib/sector_view.py]
 # ════════════════════════════════════════════════════════
 # MODULE — SECTOR HEATMAP (เหมือน v2.0 logic เดิม ย้ายมาไว้แยกไฟล์)
-import numpy as np
-import pandas as pd
-import streamlit as st
 
 
 
@@ -2362,10 +2293,7 @@ def sector_heatmap_data_live() -> pd.DataFrame:
 # โฟกัสกลยุทธ์ทั้งเว็บไปที่แนวรับ (Support) แทน — ตัดออกทั้งหมด ไม่มีการ
 # แจ้งเตือน Telegram จากในแอปอีกต่อไป (Telegram แจ้งเตือน "Job ล้มเหลว" ใน
 # prefetch.yml ยังอยู่เหมือนเดิม เป็นคนละระบบ ไม่เกี่ยวกัน)
-from typing import Optional
 
-import pandas as pd
-import streamlit as st
 
 
 # v3.10: จำกัดขนาดการสแกน "สด" (กดปุ่ม Run Screener) ไม่ให้ใหญ่เกินไป — เพราะ
@@ -2379,7 +2307,7 @@ import streamlit as st
 # กลางทาง จะไม่มีทางแยกออกว่าข้อมูลไหน "ก่อน/หลัง" การเปลี่ยนนั้น ตอนนี้ทำให้
 # เป็นค่าคงที่จริงในโค้ด แล้ว fetch_data.py stamp ค่านี้ลงไปในทุกไฟล์ JSON
 # ที่เซฟ (ดู fetch_data.py) เพื่อให้ข้อมูลในอนาคตกรองตาม version ได้เอง
-APP_VERSION = "3.44"
+APP_VERSION = "3.45"
 
 LIVE_SCAN_SAFETY_CAP = 100
 
@@ -2430,7 +2358,6 @@ def load_prefetched_bundle():
         except Exception as e:
             log_err("load_prefetched_bundle(local)", e)
     try:
-        import requests
         resp = requests.get(PREFETCH_URL, timeout=15)
         if resp.ok:
             payload = resp.json()
@@ -2452,7 +2379,6 @@ def load_previous_snapshot(max_days_back: int = 5):
     ในช่วง max_days_back วัน
     """
     try:
-        import requests
         today = datetime.date.today()
         for i in range(1, max_days_back + 1):
             d = (today - datetime.timedelta(days=i)).isoformat()
@@ -2485,7 +2411,6 @@ def load_prefetched_sector_heatmap():
         except Exception as e:
             log_err("load_prefetched_sector_heatmap(local)", e)
     try:
-        import requests
         resp = requests.get(SECTOR_HEATMAP_URL, timeout=15)
         if resp.ok:
             payload = resp.json()
@@ -3783,7 +3708,6 @@ def main():
                 vc = df_bt["bucket"].value_counts().sort_index()
                 vc = vc[vc > 0]
 
-                import streamlit.components.v1 as components
                 bars = ""
                 mx = max(vc.values) if len(vc) else 1
                 for interval_b, cnt in vc.items():
