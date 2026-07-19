@@ -1145,6 +1145,50 @@ def _download_info(ticker: str) -> dict:
     return yf.Ticker(ticker).info or {}
 
 
+@st.cache_data(ttl=1800)  # 30 นาที — ข่าวเปลี่ยนบ่อยกว่าราคาปิด/fundamentals
+                          # แต่ไม่ต้องเรียลไทม์เป๊ะ กันยิง Yahoo ถี่เกินไป
+def fetch_stock_news(ticker: str, limit: int = 5) -> list:
+    """
+    v3.46: ดึงข่าวผ่าน yfinance โดยตรง — ฟรี ไม่ต้องสมัคร API key เพิ่ม
+    (ตามที่ตัดสินใจว่าเก็บแนวรับไว้เป็นแกนหลัก แค่เพิ่มข่าวเป็นชั้นเสริม)
+
+    ⚠️ โครงสร้างข้อมูลข่าวที่ yfinance คืนมา **เปลี่ยนไปมาหลายรอบระหว่าง
+    เวอร์ชัน** (บางเวอร์ชันซ้อนอยู่ใต้ key "content" บางเวอร์ชันแบนราบ) เขียน
+    ให้รองรับทั้งสองแบบกันพังตอนเจอ yfinance เวอร์ชันที่ต่างจากตอนเขียนโค้ดนี้
+    (requirements.txt ตั้ง yfinance>=0.2.30 แบบเปิดกว้าง ไม่ pin เวอร์ชันตายตัว)
+
+    คืนค่า list of dict: [{title, publisher, link, pub_ts}, ...] เรียงใหม่สุด
+    ก่อน — ไม่เคยทดสอบกับ Yahoo จริงได้ในสภาพแวดล้อมนี้ (เข้าถึง Yahoo Finance
+    ไม่ได้) ทดสอบแค่ logic การแปลงโครงสร้างข้อมูลด้วยข้อมูลจำลองเท่านั้น
+    """
+    try:
+        raw = yf.Ticker(ticker).news or []
+        out = []
+        for item in raw[:limit]:
+            # รองรับทั้งแบบซ้อน ("content") และแบบแบนราบ (เวอร์ชันเก่ากว่า)
+            content = item.get("content") or item
+            title = content.get("title") or "—"
+            provider = content.get("provider") or {}
+            publisher = (provider.get("displayName") if isinstance(provider, dict) else None) \
+                        or item.get("publisher") or "—"
+            url_obj = content.get("canonicalUrl") or content.get("clickThroughUrl") or {}
+            link = (url_obj.get("url") if isinstance(url_obj, dict) else None) or item.get("link") or ""
+            pub_ts = content.get("pubDate") or item.get("providerPublishTime")
+            if title and title != "—":
+                out.append({"title": title, "publisher": publisher, "link": link, "pub_ts": pub_ts})
+        return out
+    except Exception as e:
+        log_err(f"fetch_stock_news({ticker})", e)
+        return []
+
+
+def fetch_market_news(limit: int = 5) -> list:
+    """v3.46: ข่าวตลาดภาพรวม — ใช้ SPY (ETF ติดตาม S&P 500) เป็นตัวแทน
+    เพราะเป็น ticker ที่ข่าวเกาะกระแสตลาดกว้างๆมากที่สุด ไม่ต้องพึ่ง API
+    ข่าวแยกต่างหาก (ประหยัดกว่า ไม่เพิ่มความซับซ้อน/ค่าใช้จ่าย)"""
+    return fetch_stock_news("SPY", limit=limit)
+
+
 def _safe_num(val, decimals=2):
     """แปลงค่าเป็น float อย่างปลอดภัย — เคยพบว่า field บางตัวจาก Yahoo (เช่น P/E
     ของ BILL) คืนมาเป็น string แทนตัวเลข ทำให้ round() พังทั้งฟังก์ชันและ field
@@ -1716,6 +1760,28 @@ hr { border-color:var(--line) !important; margin:1rem 0 !important; }
 .hud-corner.tr { top:6px; right:6px; border-top:2px solid; border-right:2px solid; }
 .hud-corner.bl { bottom:6px; left:6px; border-bottom:2px solid; border-left:2px solid; }
 .hud-corner.br { bottom:6px; right:6px; border-bottom:2px solid; border-right:2px solid; }
+
+/* ── v3.47: HERO variant — พื้นที่หายใจเยอะขึ้น + ตัวหนังสือใหญ่ขึ้น + แสง
+   เรืองรัศมี (radial glow) ด้านหลังชื่อเว็บ ตามแนวสไตล์ "hero section" ที่
+   ขอ (พื้นมืด ตัวหนังสือใหญ่หนา มี accent เรืองแสง) — เป็นแค่ CSS เพิ่มเติม
+   ต่อยอดจาก .hud-frame เดิม ไม่ได้แทนที่ ของเดิมยังใช้ได้ปกติถ้าจำเป็น */
+.hero-frame {
+    padding:42px 24px 38px 24px !important;
+}
+.hero-frame::after {
+    content:""; position:absolute; top:50%; left:50%;
+    width:480px; height:480px; transform:translate(-50%,-50%);
+    background:radial-gradient(circle, rgba(45,226,230,0.14) 0%, rgba(182,107,255,0.08) 40%, transparent 70%);
+    pointer-events:none; z-index:0;
+}
+.hero-title {
+    font-size:clamp(1.8rem, 5vw, 3.4rem) !important;
+    font-weight:800; letter-spacing:0.02em; position:relative; z-index:1;
+    text-shadow:0 0 24px rgba(45,226,230,0.35);
+}
+.hero-tagline {
+    position:relative; z-index:1;
+}
 
 /* ── METRIC CARDS ── */
 div[data-testid="metric-container"] {
@@ -2307,7 +2373,7 @@ def sector_heatmap_data_live() -> pd.DataFrame:
 # กลางทาง จะไม่มีทางแยกออกว่าข้อมูลไหน "ก่อน/หลัง" การเปลี่ยนนั้น ตอนนี้ทำให้
 # เป็นค่าคงที่จริงในโค้ด แล้ว fetch_data.py stamp ค่านี้ลงไปในทุกไฟล์ JSON
 # ที่เซฟ (ดู fetch_data.py) เพื่อให้ข้อมูลในอนาคตกรองตาม version ได้เอง
-APP_VERSION = "3.45"
+APP_VERSION = "3.47"
 
 LIVE_SCAN_SAFETY_CAP = 100
 
@@ -2470,14 +2536,16 @@ inject_css()
 
 def main():
     st.markdown(f"""
-    <div class="hud-frame" style="text-align:center;">
+    <div class="hud-frame hero-frame" style="text-align:center;">
         <div class="hud-corner tl"></div><div class="hud-corner tr"></div>
         <div class="hud-corner bl"></div><div class="hud-corner br"></div>
-        <h1 style="font-size:1.9rem;margin:0;letter-spacing:0.03em;">
+        <h1 class="hero-title" style="margin:0;">
             <span style="color:#ffffff;">INSTITUTIONAL STOCK SCREENER</span>
-            <span style="font-size:0.85rem;color:var(--cyan);font-family:'Share Tech Mono',monospace;margin-left:8px;">v{APP_VERSION}</span>
         </h1>
-        <p style="color:var(--text-dim);font-size:0.85rem;margin:6px 0 0 0;font-family:'Chakra Petch',sans-serif;letter-spacing:0.04em;">
+        <p class="hero-tagline" style="color:var(--cyan);font-size:0.8rem;font-family:'Share Tech Mono',monospace;margin:8px 0 0 0;letter-spacing:0.08em;">
+            v{APP_VERSION}
+        </p>
+        <p class="hero-tagline" style="color:var(--text-dim);font-size:0.9rem;margin:10px 0 0 0;font-family:'Chakra Petch',sans-serif;letter-spacing:0.04em;">
             PRECISION MATH &nbsp;//&nbsp; MULTI-MARKET &nbsp;//&nbsp; HIDDEN GEM ENGINE &nbsp;//&nbsp; BACKTESTER
         </p>
     </div>
@@ -2993,6 +3061,26 @@ def main():
 
             dfv = dfv.sort_values(["_st", "_mc", "_sq"]).drop(columns=["_st", "_mc", "_sq"])
 
+            # v3.46: ข่าวตลาดภาพรวม — ชั้นข้อมูลเสริม ไม่ผูกกับ Universe/filter
+            # ที่เลือกไว้ (ข่าวตลาดเป็นภาพกว้าง ใช้ SPY เป็นตัวแทน) พับเก็บเป็น
+            # ค่าเริ่มต้นตามหลัก "ไม่รกตา" ที่ยึดมาตลอด — ไม่ได้บังคับให้เห็น
+            # ทุกครั้งที่เปิดแอป เปิดเองได้ถ้าสนใจ
+            with st.expander("📰 ข่าวตลาดวันนี้ (ภาพรวม)", expanded=False):
+                market_news = fetch_market_news(limit=5)
+                if not market_news:
+                    st.caption("ไม่พบข่าวตลาดภาพรวมตอนนี้")
+                else:
+                    for n in market_news:
+                        pub = n.get("publisher") or "—"
+                        title = n.get("title") or "—"
+                        link = n.get("link") or ""
+                        if link:
+                            st.markdown(f"**[{title}]({link})** — _{pub}_")
+                        else:
+                            st.markdown(f"**{title}** — _{pub}_")
+                    st.caption("⚠️ ใช้ SPY (ETF ติดตาม S&P 500) เป็นตัวแทนข่าวตลาดภาพรวม — "
+                              "หัวข้อข่าวจาก Yahoo Finance โดยตรง กดลิงก์เพื่ออ่านเนื้อหาเต็ม")
+
             # ════════════════════════════════════════════════════════
             # v3.39: การ์ดสรุป "ตัวเด่นวันนี้" ก่อน — ตามที่ตัดสินใจ (ทางเลือก A)
             # ย้ายเนื้อหาจาก expander "แนวรับคุณภาพสูง" (เดิมอยู่ใต้ตารางเต็ม)
@@ -3355,6 +3443,25 @@ def main():
                             bull_now = match.iloc[0].get("Bull %")
                     bull_txt = f" — {bull_now:.0f}% ของหมวดนี้เป็นขาขึ้นตอนนี้" if bull_now is not None else ""
                     st.caption(f"📂 หมวด: {sector_now}{bull_txt}")
+
+                # v3.46: ข่าวรายตัว — ชั้นข้อมูลเสริมตามที่ตกลงกันไว้ (เก็บ
+                # แนวรับเป็นแกนหลัก แค่เพิ่มข่าวช่วยประกอบการตัดสินใจ ไม่ใช่
+                # แทนที่กลยุทธ์เดิม) ดึงฟรีผ่าน yfinance ไม่มีค่าใช้จ่ายเพิ่ม
+                with st.expander(f"📰 ข่าวล่าสุดของ {sel}", expanded=False):
+                    news_items = fetch_stock_news(sel, limit=5)
+                    if not news_items:
+                        st.caption("ไม่พบข่าวล่าสุดสำหรับหุ้นตัวนี้ตอนนี้ (หรือ yfinance ยังไม่มีข่าวให้)")
+                    else:
+                        for n in news_items:
+                            pub = n.get("publisher") or "—"
+                            title = n.get("title") or "—"
+                            link = n.get("link") or ""
+                            if link:
+                                st.markdown(f"**[{title}]({link})** — _{pub}_")
+                            else:
+                                st.markdown(f"**{title}** — _{pub}_")
+                        st.caption("⚠️ หัวข้อข่าวมาจาก Yahoo Finance โดยตรง เป็นแค่หัวข้อ ไม่ใช่บทวิเคราะห์ "
+                                  "— กดลิงก์เพื่ออ่านเนื้อหาเต็มจากต้นฉบับ")
 
                 ema_info = [(5, "#93a8c9"), (10, "#93a8c9"), (20, "#ffd76a"),
                             (50, "#2de2e6"), (100, "#b66bff"), (200, "#ff3864")]
