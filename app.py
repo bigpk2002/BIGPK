@@ -1773,11 +1773,21 @@ hr { border-color:var(--line) !important; margin:1rem 0 !important; }
     width:480px; height:480px; transform:translate(-50%,-50%);
     background:radial-gradient(circle, rgba(45,226,230,0.14) 0%, rgba(182,107,255,0.08) 40%, transparent 70%);
     pointer-events:none; z-index:0;
+    animation:hero-pulse 4s ease-in-out infinite;
+}
+@keyframes hero-pulse {
+    0%, 100% { transform:translate(-50%,-50%) scale(1); opacity:0.85; }
+    50%      { transform:translate(-50%,-50%) scale(1.15); opacity:1; }
 }
 .hero-title {
     font-size:clamp(1.8rem, 5vw, 3.4rem) !important;
     font-weight:800; letter-spacing:0.02em; position:relative; z-index:1;
     text-shadow:0 0 24px rgba(45,226,230,0.35);
+    animation:hero-glow 4s ease-in-out infinite;
+}
+@keyframes hero-glow {
+    0%, 100% { text-shadow:0 0 24px rgba(45,226,230,0.35); }
+    50%      { text-shadow:0 0 40px rgba(45,226,230,0.6), 0 0 70px rgba(182,107,255,0.3); }
 }
 .hero-tagline {
     position:relative; z-index:1;
@@ -2373,7 +2383,7 @@ def sector_heatmap_data_live() -> pd.DataFrame:
 # กลางทาง จะไม่มีทางแยกออกว่าข้อมูลไหน "ก่อน/หลัง" การเปลี่ยนนั้น ตอนนี้ทำให้
 # เป็นค่าคงที่จริงในโค้ด แล้ว fetch_data.py stamp ค่านี้ลงไปในทุกไฟล์ JSON
 # ที่เซฟ (ดู fetch_data.py) เพื่อให้ข้อมูลในอนาคตกรองตาม version ได้เอง
-APP_VERSION = "3.47"
+APP_VERSION = "3.48"
 
 LIVE_SCAN_SAFETY_CAP = 100
 
@@ -2843,11 +2853,16 @@ def main():
 
 
     # ── TABS ────────────────────────────────────────────────
-    tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
+    # v3.48: ตัดแท็บ Hidden Gems กับ Backtester ออกตามที่ขอ (ต้องการเว็บที่
+    # เรียบง่ายขึ้น) — ตั้งใจไม่เปลี่ยนชื่อตัวแปร tab1/tab3/tab5/tab6 เพื่อไม่
+    # ต้องไล่แก้ "with tabX:" ทุกจุดในไฟล์ทั้งหมด (เสี่ยงพลาดได้) แค่ไม่ unpack
+    # tab2/tab4 อีกต่อไป ฟังก์ชัน backtest()/backtest_support_accuracy() ที่
+    # เคยใช้ในแท็บเหล่านี้ยังเก็บไว้ในโค้ด (backtest() ยังถูกใช้จริงใน Watchlist
+    # ด้วย — ลบไม่ได้ ส่วน backtest_support_accuracy() เก็บไว้เผื่ออยากเอากลับ
+    # มาใช้ทีหลัง ไม่ลบทิ้งเพราะเป็นเครื่องมือพิสูจน์กลยุทธ์ที่ทดสอบมาเยอะ)
+    tab1, tab3, tab5, tab6 = st.tabs([
         "📊 Dashboard | แดชบอร์ด",
-        "💎 Hidden Gems | หุ้นซ่อนเร้น",
         "🔍 Deep Dive | เจาะลึกหุ้น",
-        "📈 Backtester | ทดสอบย้อนหลัง",
         "🗺️ Sector Map | แผนผังกลุ่มหุ้น",
         "⭐ Watchlist | รายการเฝ้าดู",
     ])
@@ -3163,118 +3178,8 @@ def main():
                         st.session_state.pop("wl_dropped", None)
                         st.success(f"เพิ่ม {tk} แล้ว")
 
-    # ════════════════════════════════════════════════════════
-    # TAB 2: HIDDEN GEMS
-    # ════════════════════════════════════════════════════════
-    with tab2:
-        st.markdown("### 💎 Hidden Gem Finder")
-        st.caption("หุ้นที่ EMA สวย + Volume สะสมเงียบๆ + ตลาดยังไม่สนใจ")
 
-        if df.empty:
-            st.info("รัน Screener ก่อนครับ")
-        else:
-            g_cols = st.columns(4)
-            keywords = [("💎 Hidden Gem", "Hidden", "#ffd84d"),
-                        ("🔭 Emerging Gem", "Emerging", "#34f5a4"),
-                        ("🔬 Stealth Accum", "Stealth", "#b66bff"),
-                        ("🔥 Squeeze", "Squeeze", "#ff3864")]
-            for i, (lbl, kw, clr) in enumerate(keywords):
-                cnt = df.apply(lambda r, kw=kw: kw in str(r.get("💎 Gem", "")) or
-                               kw in str(r.get("EMA Pattern", "")) or
-                               kw in str(r.get("Accum", "")), axis=1).sum()
-                g_cols[i].metric(lbl, int(cnt))
-
-            st.markdown("---")
-
-            if "EMA Pattern" in df.columns:
-                pat_vc = df["EMA Pattern"].value_counts().head(8)
-                with st.expander("📊 EMA Pattern ที่พบ", expanded=True):
-                    pc = st.columns(4)
-                    for i, (pat, cnt) in enumerate(pat_vc.items()):
-                        pc[i % 4].markdown(
-                            f'<div style="background:#101c33;border:1px solid #22344f;border-radius:8px;'
-                            f'padding:10px 14px;margin:3px 0;">'
-                            f'<div style="font-size:0.85rem;font-weight:700;color:#e8f0ff;">{pat}</div>'
-                            f'<div style="color:#5b7299;font-size:0.75rem;">{cnt} หุ้น</div></div>',
-                            unsafe_allow_html=True)
-
-            st.markdown("---")
-
-            gf1, gf2 = st.columns(2)
-            with gf1:
-                gem_f = st.multiselect("💎 Gem Label | ระดับหุ้นซ่อนเร้น",
-                    ["💎 Hidden Gem", "🔭 Emerging Gem", "👀 Watch"],
-                    default=[], key="gf1", placeholder="ทั้งหมด")
-            with gf2:
-                acc_f = st.multiselect("📦 Accumulation | การสะสมหุ้น",
-                    ["🔬 Stealth Accum", "📦 Quiet Accum", "🔍 Possible Accum", "👀 Watch"],
-                    default=[], key="gf2", placeholder="ทั้งหมด")
-
-            # v3.35: Hidden Gems ไม่เคยเช็ค mobile_mode/simple_mode มาก่อนเลย
-            # ทั้งที่ Dashboard เช็คแล้วตั้งแต่ v3.28/3.34 — เป็นสาเหตุที่
-            # กดโหมดมือถือแล้วแท็บนี้ยังกว้างเหมือนเดิม (เจอจาก user ส่งภาพ
-            # มาให้ดู) แก้ให้เช็คเหมือนกันทุกแท็บที่มีตารางหลัก
-            if mobile_mode:
-                gem_show = [c for c in ["Ticker", "Price", "💎 Gem", "Support", "Support Zone"]
-                           if c in df.columns]
-            elif simple_mode:
-                # v3.36: เหมือน Dashboard — ตัดรายละเอียดเชิงตัดสินใจ (Gem
-                # Score ตัวเลข, Accum) ออก เหลือแค่ label ที่บอกว่า "น่าคลิก
-                # เข้าไปดูต่อไหม" พอ
-                gem_show = [c for c in ["Ticker", "Price", "💎 Gem", "Support"]
-                           if c in df.columns]
-            else:
-                gem_show = [c for c in ["Ticker", "Price", "ราคาปิด", "💎 Gem", "Gem Score",
-                                        "EMA Pattern", "Squeeze", "Accum", "Accum Score",
-                                        "Support", "Support Dist%",
-                                        "RSI", "Vol×20D", "RS 20D", "MktCap$B"] if c in df.columns]
-            dfg = df[gem_show].copy()
-            if "Support Dist%" in dfg.columns:
-                dfg["Support Dist%"] = dfg["Support Dist%"].apply(
-                    lambda x: f"+{x:.1f}%" if pd.notna(x) else "—")
-
-            gm = pd.Series(True, index=dfg.index)
-            if gem_f: gm &= df["💎 Gem"].isin(gem_f)
-            if acc_f: gm &= df["Accum"].isin(acc_f)
-            if min_gem > 0: gm &= df["Gem Score"] >= min_gem
-            if min_accum > 0: gm &= df["Accum Score"] >= min_accum
-            if pat_filter: gm &= df["EMA Pattern"].apply(lambda x: any(p in str(x) for p in pat_filter))
-            dfg = dfg[gm]
-            if "Gem Score" in dfg.columns:
-                dfg = dfg.sort_values("Gem Score", ascending=False)
-
-            # v3.9: ลดคอลัมน์ที่ style เหมือนกับ Dashboard (เหตุผลเดียวกัน)
-            gsmap = {"💎 Gem": _sty_gem, "Gem Score": _sty_gs, "Support": _sty_support}
-            st.markdown(f"**{len(dfg)} หุ้น**")
-            dfg_th, gsmap_th = apply_thai_labels(dfg, gsmap)
-            gem_tbl_height = 320 if mobile_mode else 540
-            st.dataframe(make_table(dfg_th, gsmap_th, row_style_fn=_row_highlight_support),
-                         use_container_width=True, height=gem_tbl_height)
-
-            with st.expander("📖 อ่านค่า"):
-                st.markdown("""
-**💎 Gem Score (0–10)**
-- **8–10** `💎 Hidden Gem` — EMA สวย + สะสมเงียบ + cap เล็ก
-- **6–7** `🔭 Emerging Gem` — สัญญาณดี ยังไม่ครบ
-- **4–5** `👀 Watch` — ควรติดตาม
-
-**EMA Pattern**
-- `🏆 Perfect Uptrend` — price > EMA5>10>20>50>100>200
-- `🔥 Squeeze` — EMA 20/50/200 ชิดกัน < 2.5% → กำลังจะเบรค
-- `🌱 Early Break` — เพิ่งข้าม EMA200 ขึ้นมา
-
-**Squeeze Direction**
-- `🔥 Squeezing` — bandwidth แคบลง → **ยังไม่สาย**
-- `🌱 Just Broke` — เพิ่งเบรค → **รีบตัดสินใจ**
-- `📈 Expanding` — กางออกแล้ว → อาจช้าไปแล้ว
-
----
-⚠️ **คะแนนทั้งหมดด้านบนเป็น heuristic** (ให้คะแนนตามเงื่อนไขที่ตั้งเอง จากหลักการ
-วิเคราะห์เทคนิคัลทั่วไป) **ไม่ได้ผ่านการ backtest พิสูจน์ทางสถิติ** ว่าหุ้นที่ได้
-คะแนนสูงจะให้ผลตอบแทนจริงดีกว่าหุ้นทั่วไปหรือสุ่มเลือก — ใช้เป็นจุดเริ่มต้น
-ไปวิจัยเพิ่มเติมเอง ไม่ใช่คำแนะนำการลงทุน
-                """)
-
+    # v3.48: ตัดแท็บ Hidden Gems ออกทั้งหมดตามที่ขอ (เก็บฟังก์ชันช่วยที่เคยใช้ไว้ เผื่อใช้ที่อื่น)
     # ════════════════════════════════════════════════════════
     # TAB 3: DEEP DIVE
     # ════════════════════════════════════════════════════════
@@ -3748,156 +3653,10 @@ def main():
                     st.metric("P/E Ratio", row.get("P/E", "—"))
                     st.metric("Div Yield", f'{row.get("Div%", "—")}%')
 
-    # ════════════════════════════════════════════════════════
-    # TAB 4: BACKTESTER
-    # ════════════════════════════════════════════════════════
-    with tab4:
-        st.markdown("### 📈 Backtester — EMA Squeeze Strategy")
-        st.caption("ทดสอบย้อนหลัง 2 ปี: ซื้อตอน EMA Bandwidth < 3% + ราคาเหนือ EMA200 "
-                   "(เข้าซื้อที่ open ของแท่งถัดไปหลังสัญญาณเกิด ไม่ใช่ close ของแท่งสัญญาณเอง)")
 
-        b1, b2, b3 = st.columns([3, 1, 1])
-        with b1:
-            bt_ticker = st.text_input("Ticker | ชื่อหุ้น", value="AAPL", key="bt_tk").upper()
-        with b2:
-            hold_d = st.selectbox("ถือกี่วัน | Hold Days", [10, 15, 20, 30], index=2, key="bt_hold")
-        with b3:
-            st.markdown("<br>", unsafe_allow_html=True)
-            run_bt = st.button("▶️ Run Backtest | เริ่มทดสอบ", key="bt_run")
-
-        if run_bt and bt_ticker:
-            with st.spinner(f"กำลัง Backtest {bt_ticker}…"):
-                res = backtest(bt_ticker, hold_d)
-
-            if "error" in res:
-                st.error(f"❌ {res['error']}")
-            elif res.get("n", 0) == 0:
-                st.warning("ไม่พบ signal ใน 2 ปีที่ผ่านมา (ลองเปลี่ยน Ticker)")
-            else:
-                wc = "#34f5a4" if res["win_rate"] >= 55 else "#ffc857" if res["win_rate"] >= 45 else "#ff3864"
-                ac = "#34f5a4" if res["avg"] > 0 else "#ff3864"
-                cards = '<div style="display:flex;gap:10px;flex-wrap:wrap;margin:12px 0;">'
-                cards += info_card("Trades", str(res["n"]))
-                cards += info_card("Win Rate", f'{res["win_rate"]}%', wc)
-                cards += info_card("Avg Return/Trade", f'{res["avg"]}%', ac)
-                cards += info_card("Best", f'+{res["best"]}%', "#34f5a4")
-                cards += info_card("Worst", f'{res["worst"]}%', "#ff3864")
-                cards += '</div>'
-                st.markdown(cards, unsafe_allow_html=True)
-
-                # ── เปรียบเทียบกับ Buy & Hold + risk metrics (ใหม่ v3.0) ──
-                strat_ret = res.get("strategy_compound_ret", 0)
-                bh_ret = res.get("buy_hold_ret", 0)
-                beat = strat_ret > bh_ret
-                cmp_color = "#34f5a4" if beat else "#ff3864"
-                cards2 = '<div style="display:flex;gap:10px;flex-wrap:wrap;margin:4px 0 16px 0;">'
-                cards2 += info_card("กลยุทธ์ (Compound)", f'{strat_ret:+.1f}%', cmp_color,
-                                    "ผลรวมทุก trade ทบต้นต่อกัน")
-                cards2 += info_card("Buy & Hold ช่วงเดียวกัน", f'{bh_ret:+.1f}%', "#5ee6ff")
-                cards2 += info_card("Max Drawdown", f'{res.get("max_drawdown", 0)}%', "#ff3864",
-                                    "จาก equity curve ของ trades")
-                sharpe_v = res.get("sharpe")
-                cards2 += info_card("Sharpe (ประมาณ)", f'{sharpe_v}' if sharpe_v is not None else "—", "#b66bff")
-                cards2 += '</div>'
-                st.markdown(cards2, unsafe_allow_html=True)
-
-                verdict = "✅ กลยุทธ์ทำได้ดีกว่าถือเฉยๆ ในช่วงที่ทดสอบ" if beat else \
-                          "⚠️ ถือเฉยๆ (Buy & Hold) ทำผลตอบแทนได้ดีกว่ากลยุทธ์นี้ในช่วงที่ทดสอบ"
-                st.info(verdict)
-
-                with st.expander("⚠️ ข้อจำกัดของ Backtest นี้ (อ่านก่อนเชื่อตัวเลข)"):
-                    st.caption(res.get("notes", ""))
-
-                trades = res["trades"]
-                df_bt = pd.DataFrame({"Return %": trades})
-                bins = [-100, -40, -20, -10, -5, 0, 5, 10, 20, 40, 200]
-                df_bt["bucket"] = pd.cut(df_bt["Return %"], bins=bins)
-                vc = df_bt["bucket"].value_counts().sort_index()
-                vc = vc[vc > 0]
-
-                bars = ""
-                mx = max(vc.values) if len(vc) else 1
-                for interval_b, cnt in vc.items():
-                    pct = cnt / mx * 100
-                    is_positive = interval_b.right > 0
-                    col = "#34f5a4" if is_positive else "#ff3864"
-                    label = f"{interval_b.left:.0f}% to {interval_b.right:.0f}%"
-                    bars += (f'<div style="display:flex;align-items:center;gap:8px;margin:3px 0;">'
-                             f'<div style="color:#5b7299;font-size:0.75rem;width:120px;text-align:right;">{label}</div>'
-                             f'<div style="background:{col};height:18px;width:{pct:.0f}%;border-radius:3px;min-width:2px;"></div>'
-                             f'<div style="color:#e8f0ff;font-size:0.78rem;">{cnt}</div></div>')
-                chart_html = (f'<div style="background:#0e1626;border:1px solid #22344f;'
-                              f'border-radius:10px;padding:16px 20px;">'
-                              f'<div style="color:#5b7299;font-size:0.78rem;margin-bottom:10px;">'
-                              f'การกระจาย Return หลัง {hold_d} วัน</div>{bars}</div>')
-                components.html(chart_html, height=max(len(vc) * 28 + 60, 200))
-
-                with st.expander("ดู trades ทั้งหมด (พร้อมวันที่เข้า-ออก)"):
-                    details = res.get("trade_details", [])
-                    if details:
-                        tdf = pd.DataFrame(details)
-                        tdf.insert(0, "Trade #", range(1, len(tdf) + 1))
-                        tdf["Result"] = tdf["ret"].apply(lambda x: "✅ Win" if x > 0 else "❌ Loss")
-                        tdf = tdf.rename(columns={"ret": "Return %", "entry_date": "Entry", "exit_date": "Exit"})
-                        st.dataframe(make_table(*apply_thai_labels(tdf)), use_container_width=True)
-                    else:
-                        tdf = pd.DataFrame({"Trade #": range(1, len(trades) + 1), "Return %": trades})
-                        tdf["Result"] = tdf["Return %"].apply(lambda x: "✅ Win" if x > 0 else "❌ Loss")
-                        st.dataframe(make_table(*apply_thai_labels(tdf)), use_container_width=True)
-
-        st.markdown("---")
-        st.markdown("### 📊 Support Accuracy — แนวรับแม่นแค่ไหนจริงๆ")
-        st.caption("ย้อนดูประวัติหุ้นตัวอย่าง 50 ตัว (ผสมหุ้นใหญ่+เล็ก/กลาง) 2 ปี หาทุกจุดที่เคยเข้าเงื่อนไข "
-                  "แนวรับ แล้ววัดผลตอบแทนจริงใน 10/20 วันถัดไป — ใช้แทนการเชื่อ label เฉยๆ")
-
-        run_sup_bt = st.button("🔬 วิเคราะห์ Support Accuracy", key="sup_bt_run")
-        if run_sup_bt:
-            with st.spinner("กำลังย้อนวิเคราะห์แนวรับของหุ้นตัวอย่าง 50 ตัว (อาจใช้เวลา 2-3 นาที)…"):
-                sup_res = backtest_support_accuracy()
-            st.session_state["sup_bt_res"] = sup_res
-
-        if "sup_bt_res" in st.session_state:
-            sup_res = st.session_state["sup_bt_res"]
-            if "error" in sup_res:
-                st.error(f"❌ {sup_res['error']}")
-            else:
-                st.caption(f"วิเคราะห์จากหุ้น {sup_res['n_tickers']} ตัว · พบจุดที่เข้าเงื่อนไขแนวรับ "
-                          f"{sup_res.get('n_support_events', 0)} ครั้ง · "
-                          f"Buy & Hold เฉลี่ยของกลุ่มตัวอย่างช่วงเดียวกัน: "
-                          f"{sup_res['buy_hold_avg']:+.1f}%" if sup_res.get("buy_hold_avg") is not None else "")
-
-                sup_table = sup_res.get("support_table", pd.DataFrame())
-                if not sup_table.empty:
-                    sup_smap = {"Support": _sty_support, "ผลตอบแทนเฉลี่ย 10วัน%": _sty_rs,
-                               "ผลตอบแทนเฉลี่ย 20วัน%": _sty_rs, "Win Rate 10วัน%": _sty_wr,
-                               "Win Rate 20วัน%": _sty_wr, "ความเชื่อมั่น": _sty_confidence}
-                    sup_table_th, sup_smap_th = apply_thai_labels(sup_table, sup_smap)
-                    st.dataframe(make_table(sup_table_th, sup_smap_th), use_container_width=True)
-                    st.caption("ถ้า Win Rate 10/20 วันของ '🟢 อยู่ที่แนวรับ' สูงกว่า 50% และสูงกว่า Buy & Hold "
-                              "เฉลี่ยด้านบนชัดเจน แปลว่าฟีเจอร์แนวรับมีหลักฐานสนับสนุนว่าใช้ได้จริง — ถ้าใกล้เคียง "
-                              "หรือต่ำกว่า แปลว่ายังไม่ควรเชื่อมั่นมาก ควรใช้ร่วมกับการวิเคราะห์อื่นเสมอ")
-                else:
-                    st.info("ไม่พบข้อมูล Support ในช่วงทดสอบ — อาจเป็นเพราะหุ้นตัวอย่างไม่ค่อยมีจังหวะใกล้แนวรับในช่วงนี้")
-
-                # v3.24 ข้อ 1: ตาราง breakdown แยกทีละปัจจัย (touch/volume/
-                # confluence) — เดิมน้ำหนักคะแนนใน support_status() (touch×1.5,
-                # volume 2, confluence 2) เป็นตัวเลขที่ตั้งเอง ไม่เคยพิสูจน์
-                # ว่าปัจจัยไหนช่วยจริง ตารางนี้ให้ดูของจริงว่าปัจจัยไหน Win Rate
-                # สูงกว่ากันชัดเจน จะได้รู้ว่าควรเชื่อปัจจัยไหนมากกว่ากัน
-                factor_table = sup_res.get("factor_table", pd.DataFrame())
-                if not factor_table.empty:
-                    with st.expander("🔬 แยกทีละปัจจัย — อันไหนช่วยจริง (Touch/Volume/Confluence)", expanded=False):
-                        st.caption("เทียบ Win Rate/ผลตอบแทนของแต่ละปัจจัยที่ใช้ให้คะแนน Support Quality "
-                                  "แยกกัน — ถ้าคู่ไหน (เช่น 'มี Confluence' vs 'ไม่มี Confluence') ตัวเลขต่างกัน "
-                                  "ชัดเจน แปลว่าปัจจัยนั้นมีผลจริง ถ้าใกล้เคียงกันมาก แปลว่าปัจจัยนั้นอาจไม่ค่อย "
-                                  "สำคัญเท่าที่คิดไว้ตอนตั้งน้ำหนักคะแนน")
-                        factor_smap = {"ผลตอบแทนเฉลี่ย 20วัน%": _sty_rs, "Win Rate 20วัน%": _sty_wr,
-                                      "ความเชื่อมั่น": _sty_confidence}
-                        st.dataframe(make_table(factor_table, factor_smap), use_container_width=True)
-
-                with st.expander("⚠️ ข้อจำกัดของผลทดสอบนี้ (อ่านก่อนเชื่อตัวเลข)"):
-                    st.caption(sup_res["notes"])
-
+    # v3.48: ตัดแท็บ Backtester ออกตามที่ขอ — เก็บ backtest()/backtest_support_accuracy()
+    # ไว้ในโค้ด (backtest() ยังใช้จริงใน Watchlist ด้วย ลบไม่ได้ ส่วน
+    # backtest_support_accuracy() เก็บไว้เผื่ออยากเอากลับมาใช้ทีหลัง)
     # ════════════════════════════════════════════════════════
     # TAB 5: SECTOR MAP
     # ════════════════════════════════════════════════════════
