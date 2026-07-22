@@ -1705,20 +1705,22 @@ CSS_BLOCK = """
          + Share Tech Mono (tickers/prices/readouts)
    ════════════════════════════════════════════════════════════ */
 :root {
-    --bg:#060912; --panel:#0e1626; --panel2:#101c33; --line:#1c2b45; --line2:#22344f;
-    --cyan:#2de2e6; --violet:#b66bff; --green:#34f5a4; --red:#ff3864; --amber:#ffc857; --gold:#ffd84d;
+    /* v3.49: "Dark Minimal" — ตามที่เลือก (ปลอดภัยกว่าพื้นขาว เพราะมีสี
+       ตัวหนังสือ hardcode ไว้กว่า 140 จุดทั่วไฟล์ที่ออกแบบมาให้อ่านบนพื้น
+       เข้ม ถ้าเปลี่ยนเป็นพื้นขาวต้องไล่แก้ทุกจุดเสี่ยงตกหล่น) คงพื้นหลังเข้ม
+       เดิมไว้ (ตัวหนังสือเดิมยังอ่านออกปกติ ไม่กระทบ) แค่ปรับสี accent จาก
+       นีออนจัดๆ เป็นสีทึบนิ่งๆแทน ให้ความรู้สึกจริงจัง/มืออาชีพขึ้น */
+    --bg:#0a0d12; --panel:#12161d; --panel2:#161b24; --line:#20262f; --line2:#282f3a;
+    --cyan:#5b8ba8; --violet:#7d6fa3; --green:#4a9b7f; --red:#c25b5b; --amber:#b8925a; --gold:#c9a869;
     --text:#e8f0ff; --text-mid:#93a8c9; --text-dim:#5b7299;
 }
 
 /* ── BASE ── */
 html, body, [class*="css"] { font-family:'Sarabun','Chakra Petch',sans-serif; }
 .stApp {
-    background:
-        radial-gradient(circle at 12% 18%, rgba(182,107,255,0.07), transparent 38%),
-        radial-gradient(circle at 88% 78%, rgba(45,226,230,0.08), transparent 42%),
-        repeating-linear-gradient(0deg, rgba(45,226,230,0.025) 0px, rgba(45,226,230,0.025) 1px, transparent 1px, transparent 40px),
-        repeating-linear-gradient(90deg, rgba(45,226,230,0.025) 0px, rgba(45,226,230,0.025) 1px, transparent 1px, transparent 40px),
-        var(--bg) !important;
+    /* v3.49: ตัดลายกริดพื้นหลัง + glow วงกลมออกทั้งหมด (ลูกเล่นแนวเกม) เหลือ
+       แค่พื้นสีเข้มเรียบๆ ให้ความรู้สึกเบา/เป็นทางการขึ้นมาก */
+    background:var(--bg) !important;
 }
 .main .block-container { padding:1.2rem 2rem 2rem 2rem !important; max-width:100% !important; }
 * { scrollbar-width:thin; scrollbar-color:var(--cyan) var(--panel); }
@@ -1744,50 +1746,27 @@ code {
 hr { border-color:var(--line) !important; margin:1rem 0 !important; }
 
 /* ── HUD HEADER PANEL (bracketed terminal frame for the title) ── */
+/* v3.49: ตัดเส้นสแกนวิ่ง (hud-scan) + gradient เรืองแสงพื้นหลังออก ตามแนว
+   Dark Minimal — เหลือแค่กรอบเรียบๆ นิ่งๆ ไม่มีอะไรขยับ */
 .hud-frame {
     position:relative; border:1px solid var(--line2); border-radius:6px;
-    background:linear-gradient(180deg, rgba(45,226,230,0.05), rgba(182,107,255,0.03));
+    background:var(--panel);
     padding:18px 24px; margin-bottom:14px; overflow:hidden;
 }
-.hud-frame::before {
-    content:""; position:absolute; top:0; left:0; right:0; height:2px;
-    background:linear-gradient(90deg, transparent, var(--cyan), var(--violet), transparent);
-    animation:hud-scan 5s linear infinite;
-}
-@keyframes hud-scan { 0%{transform:translateX(-100%);} 100%{transform:translateX(100%);} }
-.hud-corner { position:absolute; width:14px; height:14px; border-color:var(--cyan); opacity:0.8; }
+.hud-corner { position:absolute; width:14px; height:14px; border-color:var(--cyan); opacity:0.6; }
 .hud-corner.tl { top:6px; left:6px; border-top:2px solid; border-left:2px solid; }
 .hud-corner.tr { top:6px; right:6px; border-top:2px solid; border-right:2px solid; }
 .hud-corner.bl { bottom:6px; left:6px; border-bottom:2px solid; border-left:2px solid; }
 .hud-corner.br { bottom:6px; right:6px; border-bottom:2px solid; border-right:2px solid; }
 
-/* ── v3.47: HERO variant — พื้นที่หายใจเยอะขึ้น + ตัวหนังสือใหญ่ขึ้น + แสง
-   เรืองรัศมี (radial glow) ด้านหลังชื่อเว็บ ตามแนวสไตล์ "hero section" ที่
-   ขอ (พื้นมืด ตัวหนังสือใหญ่หนา มี accent เรืองแสง) — เป็นแค่ CSS เพิ่มเติม
-   ต่อยอดจาก .hud-frame เดิม ไม่ได้แทนที่ ของเดิมยังใช้ได้ปกติถ้าจำเป็น */
+/* v3.49: ตัดแสงเรืองรัศมี (glow) + แอนิเมชันเต้น/กระพริบออกทั้งหมด ตามแนว
+   Dark Minimal ที่เลือก — เหลือแค่ตัวหนังสือใหญ่หนานิ่งๆ ไม่มีอะไรขยับ */
 .hero-frame {
     padding:42px 24px 38px 24px !important;
-}
-.hero-frame::after {
-    content:""; position:absolute; top:50%; left:50%;
-    width:480px; height:480px; transform:translate(-50%,-50%);
-    background:radial-gradient(circle, rgba(45,226,230,0.14) 0%, rgba(182,107,255,0.08) 40%, transparent 70%);
-    pointer-events:none; z-index:0;
-    animation:hero-pulse 4s ease-in-out infinite;
-}
-@keyframes hero-pulse {
-    0%, 100% { transform:translate(-50%,-50%) scale(1); opacity:0.85; }
-    50%      { transform:translate(-50%,-50%) scale(1.15); opacity:1; }
 }
 .hero-title {
     font-size:clamp(1.8rem, 5vw, 3.4rem) !important;
     font-weight:800; letter-spacing:0.02em; position:relative; z-index:1;
-    text-shadow:0 0 24px rgba(45,226,230,0.35);
-    animation:hero-glow 4s ease-in-out infinite;
-}
-@keyframes hero-glow {
-    0%, 100% { text-shadow:0 0 24px rgba(45,226,230,0.35); }
-    50%      { text-shadow:0 0 40px rgba(45,226,230,0.6), 0 0 70px rgba(182,107,255,0.3); }
 }
 .hero-tagline {
     position:relative; z-index:1;
@@ -2383,7 +2362,7 @@ def sector_heatmap_data_live() -> pd.DataFrame:
 # กลางทาง จะไม่มีทางแยกออกว่าข้อมูลไหน "ก่อน/หลัง" การเปลี่ยนนั้น ตอนนี้ทำให้
 # เป็นค่าคงที่จริงในโค้ด แล้ว fetch_data.py stamp ค่านี้ลงไปในทุกไฟล์ JSON
 # ที่เซฟ (ดู fetch_data.py) เพื่อให้ข้อมูลในอนาคตกรองตาม version ได้เอง
-APP_VERSION = "3.48"
+APP_VERSION = "3.49"
 
 LIVE_SCAN_SAFETY_CAP = 100
 
