@@ -480,15 +480,16 @@ TICKER_TO_SECTOR = {tk: sector for sector, tickers in SECTOR_MAP.items() for tk 
 GITHUB_REPO = "bigpk2002/BIGPK"
 RELEASE_TAG = "latest-data"
 
+# v3.50: ตัด Universe ให้เหลือแค่ 3 ตัวเลือกตามที่ขอ (S&P500/Nasdaq100/
+# Sector Focus) — ตัด Russell 2000, US Broad Market, หุ้นไทย SET/mai, ETF
+# Screener, Custom Tickers ออก (Custom Tickers ถูกแทนที่ด้วยช่องค้นหาแยก
+# ต่างหากในไซด์บาร์แทน ดู "quick search" ด้านล่าง) — ฟังก์ชัน fetch_russell2000
+# /fetch_broad_us/fetch_set/fetch_etfs ที่ไม่ได้ใช้แล้วยังเก็บไว้ในโค้ด เผื่อ
+# อยากเอากลับมาใช้ทีหลัง ไม่ลบทิ้ง
 UNIVERSE_OPTIONS = {
     "S&P 500 (503)": fetch_sp500,
     "Nasdaq 100 (101)": fetch_nasdaq100,
-    "Russell 2000 Small Cap": fetch_russell2000,
-    "US Broad Market (~700)": fetch_broad_us,
-    "หุ้นไทย SET/mai": fetch_set,
-    "ETF Screener (70)": fetch_etfs,
     "Sector Focus | เลือกตามหมวด": None,
-    "Custom Tickers": None,
 }
 
 
@@ -2362,7 +2363,7 @@ def sector_heatmap_data_live() -> pd.DataFrame:
 # กลางทาง จะไม่มีทางแยกออกว่าข้อมูลไหน "ก่อน/หลัง" การเปลี่ยนนั้น ตอนนี้ทำให้
 # เป็นค่าคงที่จริงในโค้ด แล้ว fetch_data.py stamp ค่านี้ลงไปในทุกไฟล์ JSON
 # ที่เซฟ (ดู fetch_data.py) เพื่อให้ข้อมูลในอนาคตกรองตาม version ได้เอง
-APP_VERSION = "3.49"
+APP_VERSION = "3.50"
 
 LIVE_SCAN_SAFETY_CAP = 100
 
@@ -2558,8 +2559,23 @@ def main():
                                            default=["Technology | เทคโนโลยี"])
 
         custom_input = ""
-        if universe == "Custom Tickers":
-            custom_input = st.text_area("Tickers (คั่นด้วย ,)", "AAPL,MSFT,NVDA,GOOGL", height=80)
+
+        # v3.50: ช่องค้นหาหุ้นตัวเดียวแยกต่างหาก ไม่ผูกกับ Universe ที่เลือก
+        # เลย (แทนที่ "Custom Tickers" ที่เคยเป็นหนึ่งใน Universe ให้เลือก) —
+        # พิมพ์ ticker เดียว กดปุ่ม แล้วไปโผล่ที่แท็บ "เจาะลึกหุ้น" ทันที ใช้
+        # กลไกเดียวกับปุ่ม "วิเคราะห์เดี๋ยวนี้" ที่มีอยู่แล้ว (v3.43) ซึ่งรองรับ
+        # ticker ที่ไม่อยู่ใน Universe หลักอยู่แล้วโดยธรรมชาติ
+        st.markdown("---")
+        st.markdown("**🔎 ค้นหาหุ้นตัวเดียว**")
+        quick_search = st.text_input("พิมพ์ ticker แล้วกดค้นหา", "", placeholder="เช่น AAPL หรือ PTT.BK",
+                                     key="quick_search_input")
+        if st.button("🔍 ไปดูเลย", key="quick_search_btn", use_container_width=True):
+            qs_ticker = quick_search.strip().upper()
+            if qs_ticker:
+                st.session_state["dd_sel"] = qs_ticker
+                st.success(f"✅ ตั้งค่า **{qs_ticker}** ไว้แล้ว — แตะแท็บ 🔍 **เจาะลึกหุ้น** ด้านบนเพื่อดูรายละเอียด")
+            else:
+                st.warning("พิมพ์ชื่อ ticker ก่อนครับ")
 
         st.markdown("---")
         st.markdown("**🔬 Filters**")
@@ -3166,13 +3182,19 @@ def main():
         st.markdown("### 🔍 วิเคราะห์รายตัว")
 
         pick_list = df["Ticker"].tolist() if not df.empty else tickers_use[:50]
-        # v3.37: กันพัง — ถ้า dd_sel ถูกตั้งไว้จากการแตะแถวใน Dashboard ตอน
-        # Universe หนึ่ง แล้วผู้ใช้สลับ Universe ก่อนมาเปิดแท็บนี้ ticker เดิม
-        # อาจไม่อยู่ใน pick_list ของ Universe ใหม่แล้ว — st.selectbox จะ error
-        # ทันทีถ้า session_state ค้างค่าที่ไม่อยู่ใน options ล้างค่าทิ้งก่อน
-        # ถ้าไม่อยู่ในลิสต์ปัจจุบัน กลับไปใช้ค่าเริ่มต้น (ตัวแรกในลิสต์) แทน
-        if "dd_sel" in st.session_state and st.session_state["dd_sel"] not in pick_list:
-            del st.session_state["dd_sel"]
+        # v3.37: กันพัง — ถ้า dd_sel ถูกตั้งไว้จากการแตะแถวใน Dashboard/กด
+        # "ไปดูเลย" จากช่องค้นหาด่วน (v3.50) แล้ว ticker นั้นไม่ได้อยู่ใน
+        # pick_list ของ Universe ปัจจุบัน — st.selectbox จะ error ทันทีถ้า
+        # session_state ค้างค่าที่ไม่อยู่ใน options
+        #
+        # v3.50: เดิมแก้ด้วยการ "ลบทิ้ง" (กลับไปค่าเริ่มต้น) แต่วิธีนี้ทำให้
+        # ช่องค้นหาด่วนใช้งานไม่ได้เลยสำหรับ ticker ที่ไม่อยู่ใน Universe ที่
+        # เลือกไว้ (ซึ่งเป็นเป้าหมายหลักของฟีเจอร์นี้!) เปลี่ยนมาเป็น "เพิ่ม
+        # ticker นั้นเข้า pick_list ชั่วคราวแทน" — selectbox แสดงได้ถูกต้อง
+        # ไม่ error และ ticker ที่ค้นหามาจะถูกเลือกไว้ให้เลยทันที
+        dd_sel_now = st.session_state.get("dd_sel")
+        if dd_sel_now and dd_sel_now not in pick_list:
+            pick_list = [dd_sel_now] + pick_list
         d1, d2, d3 = st.columns([3, 1, 1])
         with d1:
             sel = st.selectbox("เลือกหุ้น | Select Ticker", pick_list, key="dd_sel")
