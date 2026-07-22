@@ -45,13 +45,15 @@ RELEASE_TAG = "latest-data"
 # Cap"/"US Broad Market (~700)" กลับมาเป็น universe ตรงๆ ผ่าน resolve_tickers()
 # เหมือนเดิมก่อน v3.17 ไม่ต้องเรียก app.fetch_russell2000()/fetch_broad_us()
 # แยกต่างหากอีกต่อไป
+# v3.50: ตัดให้เหลือแค่ 2 universe ตรงๆ (S&P500/Nasdaq100) ตามที่ app.py
+# ตัด UNIVERSE_OPTIONS เหลือแค่ 3 ตัวเลือก (S&P500/Nasdaq100/Sector Focus)
+# — Sector Focus ไม่ต้องอยู่ในลิสต์นี้เพราะ ticker ของทุก sector ถูกรวมเข้า
+# all_tickers แยกด้านล่างอยู่แล้ว (ดู SECTOR_MAP.values() loop) ตัด Russell
+# 2000/US Broad Market/หุ้นไทย SET/mai/ETF Screener ออกทั้งหมดเพราะเว็บไม่มี
+# ตัวเลือกเหล่านี้ให้เลือกแล้ว (ดึงมาก็ไม่มีใครใช้ เปลืองเวลาสแกนเปล่าๆ)
 PREFETCH_UNIVERSES = [
     "S&P 500 (503)",
     "Nasdaq 100 (101)",
-    "Russell 2000 Small Cap",
-    "US Broad Market (~700)",
-    "หุ้นไทย SET/mai",
-    "ETF Screener (70)",
 ]
 
 
